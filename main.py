@@ -1,288 +1,306 @@
-"""functions for fetching gcp api data"""
+"""Functions for fetching gcp api data"""
 import json
 import os
+import typing
 from google.cloud import compute_v1
 from google.cloud import pubsub_v1
-from google.cloud import scheduler_v1
-from google.oauth2 import service_account
-import googleapiclient.discovery
+from googleapiclient import discovery
+from googleapiclient import errors
 
-# from google.cloud import service_usage_v1
+import unittest
+
+import lib
+import tracing
+import traceback
+
+_parent = os.environ["PARENT"]
+_topic_path = os.environ["TOPIC_ID"]
+
+_location_allowlist = [
+    s.strip() for s in os.getenv("LOCATION_ALLOWLIST", "").split(",")
+]
+
+CLOUDASSET_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY", "ORG_POLICY", "ACCESS_POLICY"]
 
 
-# https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.services.zones.ZonesClient#google_cloud_compute_v1_services_zones_ZonesClient_list
-def list_service_accounts(request):
-    """List service accounts for project"""
-    """
-    YOUR_TOPIC_ID - ex - projects/YOUR_PROJECT_ID/topics/YOUR_TOPIC_NAME
-    call locally -  export PROJECT_ID=YOUR_PROJECT_ID; export TOPIC_ID=YOUR_TOPIC_ID; python3 -c 'import main; main.list_service_accounts("chah")'
-    """
-
-    project_id = os.getenv("PROJECT_ID")
-    topic_path = os.getenv("TOPIC_ID")
-
-    # Log project_id and topic_path
-    print("project_id: ", project_id)
-    print("topic_path: ", topic_path)
-
-    # try calling service api
-    try:
-        service = googleapiclient.discovery.build("iam", "v1")
-
-        # list service accounts for specified project
-        service_accounts = (
-            service.projects()
-            .serviceAccounts()
-            .list(name="projects/" + project_id)
-            .execute()
-        )
-        # response object
-        service_accounts_response = []
-
-        # append results to object
-        for account in service_accounts["accounts"]:
-            service_accounts_response.append(
-                {
-                    "project_id": project_id,
-                    "service_account_name": account["name"],
-                    "service_account_email": account["email"],
-                    "service_account_id": account["uniqueId"],
-                    "etag": account["etag"],
-                    "oauth2ClientId": account["oauth2ClientId"],
-                }
+def list_service_accounts(project_id: str) -> typing.List[dict]:
+    with tracing.tracer.start_as_current_span("list_service_accounts") as span:
+        span.set_attribute(project_id, "project_id")
+        res = []
+        with discovery.build("iam", "v1") as service:
+            accounts = lib.safe_list(
+                service.projects().serviceAccounts(),
+                {"name": "projects/" + project_id},
+                "accounts",
             )
-
-        # get pubsub client
-        publisher = pubsub_v1.PublisherClient()
-
-        # log data
-        print("data: ", service_accounts_response)
-
-        # jsonify
-        message_json = json.dumps(service_accounts_response)
-
-        message_bytes = message_json.encode("utf-8")
-
-        # try pushing data to pubsub
-        try:
-            publish_future = publisher.publish(
-                topic_path,
-                data=message_bytes,
-                OBSERVATION_KIND="gcpServiceAccount",  # this is used to filter results in observe - you can add as many additional attributes as you like
-            )
-            result = publish_future.result()  # verify that the publish succeeded
-            # log pubsub result
-            print("pubsub result: ", result)
-
-        # pylint: disable=broad-except;
-        except Exception as e_e:
-            print("##########################")
-            print(str(e_e))
-            print("##########################")
-            return (str(e_e), 500)
-
-        return ("Message received and published to Pubsub", 200)
-    # pylint: disable=broad-except;
-    except Exception as call_error:
-        print("##########################")
-        print(str(call_error))
-        print("##########################")
-        return (str(call_error), 500)
-
-
-def list_instance_group(request):
-    """List instance group instances for a project"""
-    """
-    YOUR_TOPIC_ID - ex - projects/YOUR_PROJECT_ID/topics/YOUR_TOPIC_NAME
-    call locally -  export PROJECT_ID=YOUR_PROJECT_ID; export TOPIC_ID=YOUR_TOPIC_ID; python3 -c 'import main; main.list_instance_group("chah")'
-    """
-
-    project_id = os.getenv("PROJECT_ID")
-    topic_path = os.getenv("TOPIC_ID")
-
-    # Log project_id and topic_path
-    print("project_id: ", project_id)
-    print("topic_path: ", topic_path)
-
-    # try calling ZonesClient api
-    try:
-        # response object
-        instance_group_instances_response = []
-
-        publisher = pubsub_v1.PublisherClient()
-
-        # client to fetch zones
-        zone_client = compute_v1.services.zones.ZonesClient
-        # client to fetch instance groups
-        instance_group_client = compute_v1.services.instance_groups.InstanceGroupsClient
-
-        # fetch zones
-        zones = zone_client().list(
-            project=project_id,
-        )
-
-        # loop zone results
-        for zone in zones:
-            # fetch instance groups in zone
-            instance_groups = instance_group_client().list(
-                project=project_id, zone=zone.name
-            )
-
-            # loop instance group result
-            for instance_group in instance_groups:
-                # get instances in instance group
-                instances = instance_group_client().list_instances(
-                    project=project_id,
-                    instance_group=instance_group.name,
-                    zone=zone.name,
+            for account in accounts:
+                res.append(
+                    {
+                        "projectId": project_id,
+                        "account": account,
+                    }
                 )
+        span.set_attribute("num_results", len(res))
+        return res
 
-                # create response object
-                for instance in instances:
-                    instance_group_instances_response.append(
+
+def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
+    with tracing.tracer.start_as_current_span(
+        "list_instance_to_instance_groups"
+    ) as span:
+        span.set_attribute(project_id, "project_id")
+        res = []
+        with compute_v1.ZonesClient() as zones_client:
+            with compute_v1.InstanceGroupsClient() as instance_group_client:
+
+                zones = zones_client.list(project=project_id)
+
+                zones_skipped = 0
+                num_instance_groups = 0
+                for zone in zones:
+                    if len(_location_allowlist) > 0:
+                        skipZone = True
+                        for l in _location_allowlist:
+                            if zone.name.startswith(l):
+                                skipZone = False
+                                break
+                        if skipZone:
+                            zones_skipped += 1
+                            continue
+                    instance_groups = instance_group_client.list(
+                        project=project_id, zone=zone.name
+                    )
+
+                    for instance_group in instance_groups:
+                        num_instance_groups += 1
+                        instances = instance_group_client.list_instances(
+                            project=project_id,
+                            instance_group=instance_group.name,
+                            zone=zone.name,
+                        )
+
+                        for instance in instances:
+                            res.append(
+                                {
+                                    "projectId": project_id,
+                                    "zoneName": zone.name,
+                                    "instanceGroupId": instance_group.id,
+                                    "instanceUrl": instance.instance,
+                                }
+                            )
+
+                span.set_attribute("zones_skipped", zones_skipped)
+                span.set_attribute("num_instance_groups", num_instance_groups)
+
+        span.set_attribute("num_results", len(res))
+        return res
+
+
+def list_cloud_scheduler_jobs(project_id: str) -> typing.List[dict]:
+    with tracing.tracer.start_as_current_span("list_cloud_scheduler_jobs") as span:
+        span.set_attribute(project_id, "project_id")
+        res = []
+
+        with discovery.build("cloudscheduler", "v1") as service:
+            locations = lib.safe_list(
+                service.projects().locations(),
+                {"name": "projects/" + project_id},
+                "locations",
+            )
+            for location in locations:
+                if len(_location_allowlist) > 0:
+                    if location["locationId"] not in _location_allowlist:
+                        continue
+                jobs = lib.safe_list(
+                    service.projects().locations().jobs(),
+                    {"parent": location["name"]},
+                    "jobs",
+                )
+                for job in jobs:
+                    res.append(
                         {
-                            "project_id": project_id,
-                            "zone": zone.name,
-                            "instance_group": instance_group.name,
-                            "instance_group_id": instance_group.id,
-                            "instance": instance.instance,
+                            "projectId": project_id,
+                            "locationId": location["locationId"],
+                            "job": job,
                         }
                     )
-        # log data
-        print("data: ", instance_group_instances_response)
 
-        message_json = json.dumps(instance_group_instances_response)
+        span.set_attribute("num_results", len(res))
+        return res
 
-        message_bytes = message_json.encode("utf-8")
 
-        # try pushing data to pubsub
-        try:
-            publish_future = publisher.publish(
-                topic_path,
-                data=message_bytes,
-                OBSERVATION_KIND="gcpInstanceGroup",  # this is used to filter results in observe - you can add as many additional attributes as you like
+def list_projects(parent: str) -> typing.List[dict]:
+    with tracing.tracer.start_as_current_span("list_projects") as span:
+        span.set_attribute("parent", parent)
+        res = []
+        with discovery.build("cloudresourcemanager", "v3") as service:
+            if parent.startswith("projects"):
+                p = service.projects().get(name=parent).execute()
+                projects = [p]
+            else:
+                projects = lib.safe_list(
+                    service.projects(),
+                    {"parent": parent},
+                    "projects",
+                )
+            for p in projects:
+                res.append(
+                    {
+                        "parent": parent,
+                        "project": p,
+                    }
+                )
+        span.set_attribute("num_results", len(res))
+        return res
+
+
+def list_assets(parent: str, content_type: str) -> typing.List[dict]:
+    with tracing.tracer.start_as_current_span("list_assets") as span:
+        span.set_attribute("parent", parent)
+        span.set_attribute("content_type", content_type)
+        res = []
+        with discovery.build("cloudasset", "v1") as service:
+            assets = lib.safe_list(
+                service.assets(),
+                {"parent": parent, "contentType": content_type},
+                "assets",
             )
-            result = publish_future.result()  # verify that the publish succeeded
-            # log pubsub result
-            print("pubsub result: ", result)
-
-        # pylint: disable=broad-except;
-        except Exception as e_e:
-            print("##########################")
-            print(str(e_e))
-            print("##########################")
-            return (str(e_e), 500)
-
-        return ("Message received and published to Pubsub", 200)
-    # pylint: disable=broad-except;
-    except Exception as call_error:
-        print("##########################")
-        print(str(call_error))
-        print("##########################")
-        return (str(call_error), 500)
+            for a in assets:
+                res.append(
+                    {
+                        "parent": parent,
+                        "asset": a,
+                    }
+                )
+        span.set_attribute("num_results", len(res))
+        return res
 
 
-def list_cloud_scheduler_jobs(request):
-    """List service accounts for project"""
-    """
-    YOUR_TOPIC_ID - ex - projects/YOUR_PROJECT_ID/topics/YOUR_TOPIC_NAME
-    call locally -  export PROJECT_ID=YOUR_PROJECT_ID; export TOPIC_ID=YOUR_TOPIC_NAME; python3 -c 'import main; main.list_cloud_scheduler_jobs("chah")'
-    """
+class PerProjectRegistry:
+    def __init__(
+        self,
+        list_func: typing.Callable[[str], typing.List[dict]],
+        observe_gcp_kind: str,
+    ) -> None:
+        self.list_func = list_func
+        self.observe_gcp_kind = observe_gcp_kind
 
-    project_id = os.getenv("PROJECT_ID")
-    topic_path = os.getenv("TOPIC_ID")
 
-    # Log project_id and topic_path
-    print("project_id: ", project_id)
-    print("topic_path: ", topic_path)
+per_project_registry: typing.List[PerProjectRegistry] = [
+    PerProjectRegistry(
+        list_service_accounts,
+        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
+    ),
+    PerProjectRegistry(
+        list_instance_to_instance_groups,
+        "compute.googleapis.com/Instance.InstanceToInstanceGroup",
+    ),
+    PerProjectRegistry(
+        list_cloud_scheduler_jobs,
+        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
+    ),
+]
 
-    # try fetching regions
-    try:
-        # client for cloud scheduler jobs
-        cloud_scheduler_client = scheduler_v1.CloudSchedulerClient()
-        # client for regions
-        region_client = compute_v1.services.regions.RegionsClient
-        # fetch regions
-        regions = region_client().list(
-            project=project_id,
-        )
 
-        # response object
-        cloud_scheduler_jobs_response = []
+def main(request) -> typing.Tuple[str, int]:
+    publisher = pubsub_v1.PublisherClient()
 
-        # loop regions
-        for region in regions:
-            # log region
-            print("region: ", region.name)
+    def publish(records: typing.List[dict], observe_gcp_kind: str):
+        for r in records:
+            b = json.dumps(r).encode("utf-8")
+            publish_future = publisher.publish(
+                _topic_path,
+                data=b,
+                observe_gcp_kind=observe_gcp_kind,
+            )
+            _ = publish_future.result()
 
-            # try fetching cloud scheduler jobs
+    for ct in CLOUDASSET_CONTENT_TYPES:
+        try:
+            asset_records = list_assets(_parent, ct)
+            publish(
+                asset_records,
+                # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+                # to be changed.
+                "https://cloud.google.com/asset-inventory/docs/reference/rest/v1/assets",
+            )
+        except Exception as e:
+            traceback.print_exception(e)
+
+    project_records = list_projects(_parent)
+    publish(
+        project_records,
+        # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+        # to be changed.
+        "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+    )
+
+    for p in project_records:
+        pid = p["project"]["projectId"]
+        for r in per_project_registry:
             try:
-                # if region.name not in exclude_list:
-                request = scheduler_v1.ListJobsRequest(
-                    parent=f"projects/{project_id}/locations/{region.name}"
-                )
+                records = r.list_func(pid)
+                publish(records, r.observe_gcp_kind)
+            except Exception as e:
+                traceback.print_exception(e)
 
-                # get jobs
-                page_result = cloud_scheduler_client.list_jobs(request=request)
+    return "Ok", 200
 
-                # loop jobs
-                for response in page_result:
 
-                    cloud_scheduler_jobs_response.append(
-                        {
-                            "project_id": project_id,
-                            "region": region.name,
-                            "name": response.name,
-                            "description": response.description,
-                            "schedule_time": str(response.schedule_time),
-                            "http_target": str(response.http_target),
-                            "schedule": str(response.schedule),
-                            "time_zone": response.time_zone,
-                            "user_update_time": str(response.user_update_time),
-                            "state": response.state,
-                            "status": str(response.status),
-                            "last_attempt_time": str(response.last_attempt_time),
-                            "attempt_deadline": str(response.attempt_deadline),
-                        }
-                    )
-            # pylint: disable=broad-except;
-            # if no access to jobs in region ignore
-            except Exception as e_e:
-                print("##########################")
-                print(str(e_e))
-                print("##########################")
+_PUBSUB_MAX_SIZE_BYTES = 1e7 - 1e6  # Subtract 1e6 just to be safe
 
-        publisher = pubsub_v1.PublisherClient()
 
-        # log data
-        print("data: ", cloud_scheduler_jobs_response)
+class Test(unittest.TestCase):
+    def test_kinds(self):
+        """test_kinds exists so that observe_gcp_kind is not accidentally changed.
+        If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+        to be changed.
+        """
+        registry_kinds = [r.observe_gcp_kind for r in per_project_registry]
+        self.assertTrue(
+            "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts"
+            in registry_kinds
+        )
+        self.assertTrue(
+            "compute.googleapis.com/Instance.InstanceToInstanceGroup" in registry_kinds
+        )
 
-        message_json = json.dumps(cloud_scheduler_jobs_response)
+    def test_service_accounts(self):
+        for p in list_projects(_parent):
+            res = list_service_accounts(p["project"]["projectId"])
+            self.assertTrue(len(res) > 0)
+            for r in res:
+                b = json.dumps(r).encode("utf-8")
+                self.assertTrue(len(b) < _PUBSUB_MAX_SIZE_BYTES)
 
-        message_bytes = message_json.encode("utf-8")
+    def test_instance_groups(self):
+        for p in list_projects(_parent):
+            res = list_instance_to_instance_groups(p["project"]["projectId"])
+            self.assertTrue(len(res) > 0)
+            for r in res:
+                b = json.dumps(r).encode("utf-8")
+                self.assertTrue(len(b) < _PUBSUB_MAX_SIZE_BYTES)
 
-        # try pushing data to pubsub
-        try:
-            publish_future = publisher.publish(
-                topic_path,
-                data=message_bytes,
-                OBSERVATION_KIND="gcpCloudSchedulerJobs",
-            )
-            result = publish_future.result()  # verify that the publish succeeded
-            # log pubsub result
-            print("pubsub result: ", result)
+    def test_cloud_scheduler_jobs(self):
+        for p in list_projects(_parent):
+            res = list_cloud_scheduler_jobs(p["project"]["projectId"])
+            self.assertTrue(len(res) > 0)
+            for r in res:
+                b = json.dumps(r).encode("utf-8")
+                self.assertTrue(len(b) < _PUBSUB_MAX_SIZE_BYTES)
 
-        # pylint: disable=broad-except;
-        except Exception as e_e:
-            print("##########################")
-            print(str(e_e))
-            print("##########################")
-            return (str(e_e), 500)
+    def test_projects(self):
+        res = list_projects("folders/437079763664")
+        self.assertTrue(len(res) > 0)
+        for r in res:
+            b = json.dumps(r).encode("utf-8")
+            self.assertTrue(len(b) < _PUBSUB_MAX_SIZE_BYTES)
 
-        return ("Message received and published to Pubsub", 200)
-    # pylint: disable=broad-except;
-    except Exception as call_error:
-        print("##########################")
-        print(str(call_error))
-        print("##########################")
-        return (str(call_error), 500)
+    def test_assets(self):
+        for ct in CLOUDASSET_CONTENT_TYPES:
+            res = list_assets(_parent, ct)
+            if ct == "RESOURCE" or ct == "IAM_POLICY":
+                self.assertTrue(len(res) > 0)
+            for r in res:
+                b = json.dumps(r).encode("utf-8")
+                self.assertTrue(len(b) < _PUBSUB_MAX_SIZE_BYTES)
