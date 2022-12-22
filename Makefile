@@ -1,18 +1,15 @@
 ZIPFILE := google-cloud-functions.zip
 
-.PHONY: upload
-upload:
-	find . -name "*.py" -not -path "./env/*" -print | zip ${ZIPFILE} requirements.txt -@
-	gcloud storage cp ${ZIPFILE} gs://observeinc/google-cloud-functions-`semtag getcurrent`.zip
-	rm ${ZIPFILE}
-
 .PHONY: changelog
 changelog:
 	git-chglog -o CHANGELOG.md --next-tag `semtag final -s minor -o`
 
 .PHONY: release
-release: upload
+release:
 	semtag final -s minor
+	find . -name "*.py" -not -path "./env/*" -print | zip ${ZIPFILE} requirements.txt -@
+	gcloud storage cp ${ZIPFILE} gs://observeinc/google-cloud-functions-`semtag getcurrent`.zip
+	rm ${ZIPFILE}
 
 .PHONY: test
 test:
