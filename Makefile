@@ -7,6 +7,9 @@ changelog:
 .PHONY: release
 release:
 	semtag final -s minor
+
+.PHONY: upload
+upload:
 	find . -name "*.py" -not -path "./env/*" -print | zip ${ZIPFILE} requirements.txt -@
 	gcloud storage cp ${ZIPFILE} gs://observeinc/google-cloud-functions-`semtag getcurrent`.zip
 	rm ${ZIPFILE}

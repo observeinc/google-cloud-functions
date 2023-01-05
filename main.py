@@ -5,7 +5,7 @@ import typing
 from google.cloud import compute_v1
 from google.cloud import pubsub_v1
 from googleapiclient import discovery
-from googleapiclient import errors
+from google.cloud.pubsub_v1.publisher import exceptions
 
 import unittest
 
@@ -16,16 +16,21 @@ import traceback
 _parent = os.environ["PARENT"]
 _topic_path = os.environ["TOPIC_ID"]
 
-_location_allowlist = [
-    s.strip() for s in os.getenv("LOCATION_ALLOWLIST", "").split(",")
-]
+_version = os.getenv("VERSION", "google-cloud-function")
+
+if "LOCATION_ALLOWLIST" in os.environ:
+    _location_allowlist = [
+        s.strip() for s in os.environ["LOCATION_ALLOWLIST"].split(",")
+    ]
+else:
+    _location_allowlist = None
 
 CLOUDASSET_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY", "ORG_POLICY", "ACCESS_POLICY"]
 
 
 def list_service_accounts(project_id: str) -> typing.List[dict]:
     with tracing.tracer.start_as_current_span("list_service_accounts") as span:
-        span.set_attribute(project_id, "project_id")
+        span.set_attribute("project_id", project_id)
         res = []
         with discovery.build("iam", "v1") as service:
             accounts = lib.safe_list(
@@ -48,7 +53,7 @@ def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
     with tracing.tracer.start_as_current_span(
         "list_instance_to_instance_groups"
     ) as span:
-        span.set_attribute(project_id, "project_id")
+        span.set_attribute("project_id", project_id)
         res = []
         with compute_v1.ZonesClient() as zones_client:
             with compute_v1.InstanceGroupsClient() as instance_group_client:
@@ -58,7 +63,7 @@ def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
                 zones_skipped = 0
                 num_instance_groups = 0
                 for zone in zones:
-                    if len(_location_allowlist) > 0:
+                    if _location_allowlist is not None:
                         skipZone = True
                         for l in _location_allowlist:
                             if zone.name.startswith(l):
@@ -98,7 +103,7 @@ def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
 
 def list_cloud_scheduler_jobs(project_id: str) -> typing.List[dict]:
     with tracing.tracer.start_as_current_span("list_cloud_scheduler_jobs") as span:
-        span.set_attribute(project_id, "project_id")
+        span.set_attribute("project_id", project_id)
         res = []
 
         with discovery.build("cloudscheduler", "v1") as service:
@@ -107,20 +112,20 @@ def list_cloud_scheduler_jobs(project_id: str) -> typing.List[dict]:
                 {"name": "projects/" + project_id},
                 "locations",
             )
-            for location in locations:
-                if len(_location_allowlist) > 0:
-                    if location["locationId"] not in _location_allowlist:
+            for l in locations:
+                if _location_allowlist is not None:
+                    if l["locationId"] not in _location_allowlist:
                         continue
                 jobs = lib.safe_list(
                     service.projects().locations().jobs(),
-                    {"parent": location["name"]},
+                    {"parent": l["name"]},
                     "jobs",
                 )
                 for job in jobs:
                     res.append(
                         {
                             "projectId": project_id,
-                            "locationId": location["locationId"],
+                            "locationId": l["locationId"],
                             "job": job,
                         }
                     )
@@ -193,58 +198,70 @@ per_project_registry: typing.List[PerProjectRegistry] = [
     ),
     PerProjectRegistry(
         list_instance_to_instance_groups,
-        "compute.googleapis.com/Instance.InstanceToInstanceGroup",
+        "https://cloud.google.com/asset-inventory/docs/supported-asset-types#INSTANCE_TO_INSTANCEGROUP",
     ),
     PerProjectRegistry(
         list_cloud_scheduler_jobs,
-        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
+        "https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs",
     ),
 ]
 
 
 def main(request) -> typing.Tuple[str, int]:
-    publisher = pubsub_v1.PublisherClient()
+    with tracing.tracer.start_as_current_span("main") as span:
+        publisher = pubsub_v1.PublisherClient()
 
-    def publish(records: typing.List[dict], observe_gcp_kind: str):
-        for r in records:
-            b = json.dumps(r).encode("utf-8")
-            publish_future = publisher.publish(
-                _topic_path,
-                data=b,
-                observe_gcp_kind=observe_gcp_kind,
-            )
-            _ = publish_future.result()
+        def publish(records: typing.List[dict], observe_gcp_kind: str):
+            futures = []
+            for r in records:
+                b = json.dumps(r).encode("utf-8")
+                try:
+                    f = publisher.publish(
+                        _topic_path,
+                        data=b,
+                        observe_gcp_kind=observe_gcp_kind,
+                        observe_cloud_function_version=_version,
+                    )
+                    futures.append(f)
+                except exceptions.MessageTooLargeError:
+                    span.add_event(
+                        "message_too_large", {"observe_gcp_kind": observe_gcp_kind}
+                    )
+            for f in futures:
+                _ = f.result()
 
-    for ct in CLOUDASSET_CONTENT_TYPES:
-        try:
-            asset_records = list_assets(_parent, ct)
-            publish(
-                asset_records,
-                # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-                # to be changed.
-                "https://cloud.google.com/asset-inventory/docs/reference/rest/v1/assets",
-            )
-        except Exception as e:
-            traceback.print_exception(e)
-
-    project_records = list_projects(_parent)
-    publish(
-        project_records,
-        # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-        # to be changed.
-        "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
-    )
-
-    for p in project_records:
-        pid = p["project"]["projectId"]
-        for r in per_project_registry:
+        for ct in CLOUDASSET_CONTENT_TYPES:
             try:
-                records = r.list_func(pid)
-                publish(records, r.observe_gcp_kind)
+                asset_records = list_assets(_parent, ct)
+                publish(
+                    asset_records,
+                    # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+                    # to be changed.
+                    "https://cloud.google.com/asset-inventory/docs/reference/rest/v1/assets",
+                )
             except Exception as e:
                 traceback.print_exception(e)
 
-    return "Ok", 200
+        project_records = list_projects(_parent)
+        publish(
+            project_records,
+            # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+            # to be changed.
+            "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+        )
+
+        for p in project_records:
+            pid = p["project"]["projectId"]
+            for r in per_project_registry:
+                try:
+                    records = r.list_func(pid)
+                    publish(records, r.observe_gcp_kind)
+                except Exception as e:
+                    traceback.print_exception(e)
+
+        tracing.provider.force_flush()
+
+        return "Ok", 200
 
 
 _PUBSUB_MAX_SIZE_BYTES = 1e7 - 1e6  # Subtract 1e6 just to be safe
@@ -262,7 +279,12 @@ class Test(unittest.TestCase):
             in registry_kinds
         )
         self.assertTrue(
-            "compute.googleapis.com/Instance.InstanceToInstanceGroup" in registry_kinds
+            "https://cloud.google.com/asset-inventory/docs/supported-asset-types#INSTANCE_TO_INSTANCEGROUP"
+            in registry_kinds
+        )
+        self.assertTrue(
+            "https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs"
+            in registry_kinds
         )
 
     def test_service_accounts(self):
