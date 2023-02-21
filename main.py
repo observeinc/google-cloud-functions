@@ -9,6 +9,7 @@ from google.cloud.pubsub_v1.publisher import exceptions
 
 import unittest
 
+import gzip
 import lib
 import tracing
 import traceback
@@ -214,13 +215,18 @@ def main(request) -> typing.Tuple[str, int]:
         def publish(records: typing.List[dict], observe_gcp_kind: str):
             futures = []
             for r in records:
-                b = json.dumps(r).encode("utf-8")
+                data = json.dumps(r).encode("utf-8")
+                original_length = len(data)
+                compressed_data = gzip.compress(data)
+
                 try:
                     f = publisher.publish(
                         _topic_path,
-                        data=b,
+                        data=compressed_data,
                         observe_gcp_kind=observe_gcp_kind,
                         observe_cloud_function_version=_version,
+                        original_length=str(len(data)),
+                        observe_content_encoding="gzip",
                     )
                     futures.append(f)
                 except exceptions.MessageTooLargeError:
@@ -268,6 +274,10 @@ _PUBSUB_MAX_SIZE_BYTES = 1e7 - 1e6  # Subtract 1e6 just to be safe
 
 
 class Test(unittest.TestCase):
+    def test_main(self):
+        """test_main checks that calling main doesn't result in a panic"""
+        main(None)
+
     def test_kinds(self):
         """test_kinds exists so that observe_gcp_kind is not accidentally changed.
         If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
