@@ -208,7 +208,7 @@ per_project_registry: typing.List[PerProjectRegistry] = [
 
 
 def main(request) -> typing.Tuple[str, int]:
-    with tracing.tracer.start_as_current_span("main") as span:
+    with tracing.tracer.start_as_current_span("main-collector") as span:
         publisher = pubsub_v1.PublisherClient()
 
         def publish(records: typing.List[dict], observe_gcp_kind: str):
