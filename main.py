@@ -225,7 +225,7 @@ def main(request) -> typing.Tuple[str, int]:
                         data=compressed_data,
                         observe_gcp_kind=observe_gcp_kind,
                         observe_cloud_function_version=_version,
-                        original_length=str(len(data)),
+                        observe_original_length=str(len(data)),
                         observe_content_encoding="gzip",
                     )
                     futures.append(f)
