@@ -26,6 +26,7 @@ def safe_list(
             span.set_attribute("depth", i)
             span.set_attribute("max_depth", max_depth)
 
+            # this forces a sleep if we are going to bump up against 100 list asset api calls per minute
             if i % 95 == 0 and i != 0:
                 span.set_attribute("sleeping", 60)
                 span.add_event(

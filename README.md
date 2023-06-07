@@ -9,8 +9,8 @@ for info on contributing to this repo.
 
 # Running locally
 
-export PARENT=projects/content-eng-testing-env
-export TOPIC_ID=projects/content-eng-testing-env/topics/ce-sample-env-env
+export PARENT=projects/YOUR_PROJECT_ID
+export TOPIC_ID=projects/YOUR_PROJECT_ID/topics/YOUR_TOPIC_NAME
 
 python3 -m venv .venv
 
@@ -19,3 +19,5 @@ source .venv/bin/activate
 pip3 install -r requirements.txt
 
 python3 -c 'from main import main; main("")'
+
+python3 -c 'from main import project_main; project_main("")'
