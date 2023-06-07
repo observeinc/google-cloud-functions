@@ -31,6 +31,7 @@ CLOUDASSET_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY", "ORG_POLICY", "ACCESS_POLI
 def list_service_accounts(project_id: str) -> typing.List[dict]:
     with tracing.tracer.start_as_current_span("list_service_accounts") as span:
         span.set_attribute("project_id", project_id)
+
         res = []
         with discovery.build("iam", "v1") as service:
             accounts = lib.safe_list(
@@ -57,7 +58,6 @@ def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
         res = []
         with compute_v1.ZonesClient() as zones_client:
             with compute_v1.InstanceGroupsClient() as instance_group_client:
-
                 zones = zones_client.list(project=project_id)
 
                 zones_skipped = 0
@@ -207,6 +207,56 @@ per_project_registry: typing.List[PerProjectRegistry] = [
 ]
 
 
+def project_main(request) -> typing.Tuple[str, int]:
+    with tracing.tracer.start_as_current_span("project_main") as span:
+        publisher = pubsub_v1.PublisherClient()
+
+        def publish(records: typing.List[dict], observe_gcp_kind: str):
+            futures = []
+            for r in records:
+                b = json.dumps(r).encode("utf-8")
+                try:
+                    f = publisher.publish(
+                        _topic_path,
+                        data=b,
+                        observe_gcp_kind=observe_gcp_kind,
+                        observe_cloud_function_version=_version,
+                    )
+                    futures.append(f)
+                except exceptions.MessageTooLargeError:
+                    span.add_event(
+                        "message_too_large", {"observe_gcp_kind": observe_gcp_kind}
+                    )
+                    span.SetStatus(exceptions.MessageTooLargeError, "message_too_large")
+                    span.RecordError(exceptions.MessageTooLargeError)
+
+            for f in futures:
+                _ = f.result()
+
+        project_records = list_projects(_parent)
+        publish(
+            project_records,
+            # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+            # to be changed.
+            "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+        )
+
+        for p in project_records:
+            pid = p["project"]["projectId"]
+            for r in per_project_registry:
+                try:
+                    records = r.list_func(pid)
+                    publish(records, r.observe_gcp_kind)
+                except Exception as e:
+                    traceback.print_exception(e)
+                    span.SetStatus(e.message)
+                    span.RecordError(e.message)
+
+        tracing.provider.force_flush()
+
+        return "Ok", 200
+
+
 def main(request) -> typing.Tuple[str, int]:
     with tracing.tracer.start_as_current_span("main-collector") as span:
         publisher = pubsub_v1.PublisherClient()
@@ -227,6 +277,8 @@ def main(request) -> typing.Tuple[str, int]:
                     span.add_event(
                         "message_too_large", {"observe_gcp_kind": observe_gcp_kind}
                     )
+                    span.SetStatus(exceptions.MessageTooLargeError, "message_too_large")
+                    span.RecordError(exceptions.MessageTooLargeError)
             for f in futures:
                 _ = f.result()
 
@@ -241,23 +293,8 @@ def main(request) -> typing.Tuple[str, int]:
                 )
             except Exception as e:
                 traceback.print_exception(e)
-
-        project_records = list_projects(_parent)
-        publish(
-            project_records,
-            # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-            # to be changed.
-            "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
-        )
-
-        for p in project_records:
-            pid = p["project"]["projectId"]
-            for r in per_project_registry:
-                try:
-                    records = r.list_func(pid)
-                    publish(records, r.observe_gcp_kind)
-                except Exception as e:
-                    traceback.print_exception(e)
+                span.SetStatus(e.message)
+                span.RecordError(e.message)
 
         tracing.provider.force_flush()
 

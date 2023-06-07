@@ -3,6 +3,7 @@ from googleapiclient import discovery
 
 import tracing
 import json
+import time
 
 # A Resource is what GCP calls a REST Resource.
 #
@@ -23,7 +24,14 @@ def safe_list(
 
         for i in range(max_depth):
             span.set_attribute("depth", i)
+            span.set_attribute("max_depth", max_depth)
+
+            if i % 95 == 0:
+                span.set_attribute("sleeping", 60)
+                time.sleep(60)
+
             result: dict = resource.list(**list_kwargs).execute()
+
             for r in result.get(key, []):
                 yield r
 
