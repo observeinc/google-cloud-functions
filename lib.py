@@ -26,8 +26,11 @@ def safe_list(
             span.set_attribute("depth", i)
             span.set_attribute("max_depth", max_depth)
 
-            if i % 95 == 0:
+            if i % 95 == 0 and i != 0:
                 span.set_attribute("sleeping", 60)
+                span.add_event(
+                    "sleeping", {"duration": 60, "i_value": i, "max_depth": max_depth}
+                )
                 time.sleep(60)
 
             result: dict = resource.list(**list_kwargs).execute()
