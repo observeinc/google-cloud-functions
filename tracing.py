@@ -3,12 +3,16 @@ import os
 from opentelemetry import trace
 from opentelemetry.sdk import trace as sdktrace
 from opentelemetry.sdk.trace import export
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
 disable_logging = os.getenv("DISABLE_LOGGING")
+SERVICE_NAME_VAR = os.getenv("SERVICE_NAME", "cloud_function_asset_collection")
 
-provider = sdktrace.TracerProvider()
+resource = Resource(attributes={SERVICE_NAME: SERVICE_NAME_VAR})
 
-if disable_logging is None: 
+provider = sdktrace.TracerProvider(resource=resource)
+
+if disable_logging is None:
     _processor = export.BatchSpanProcessor(
         # Set indent to none to avoid multi-line logs
         export.ConsoleSpanExporter(formatter=lambda s: s.to_json(indent=None) + "\n")
