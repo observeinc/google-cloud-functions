@@ -236,7 +236,15 @@ def main(request) -> typing.Tuple[str, int]:
             for f in futures:
                 _ = f.result()
 
-        for ct in CLOUDASSET_CONTENT_TYPES:
+        request_data = request.get_json(force=True, silent=True)
+        content_type = request_data.get('content_type', None) if request_data else None
+
+        if content_type is not None:
+            content_types = [content_type]
+        else:
+            content_types = CLOUDASSET_CONTENT_TYPES
+        
+        for ct in content_types:
             try:
                 asset_records = list_assets(_parent, ct)
                 publish(
