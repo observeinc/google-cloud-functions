@@ -2,22 +2,40 @@
 import json
 import os
 import typing
+import random
+from google.protobuf.timestamp_pb2 import Timestamp
+from datetime import datetime, timedelta
+from unittest.mock import Mock
 from google.cloud import compute_v1
 from google.cloud import pubsub_v1
+from google.cloud import tasks_v2
+import requests
 from googleapiclient import discovery
 from google.cloud.pubsub_v1.publisher import exceptions
 
 import unittest
 
 import gzip
-import lib
 import tracing
 import traceback
 
+def assert_env_var(var_name):
+    if var_name not in os.environ:
+        raise Exception(f"Environment variable {var_name} is not set")
+
+_required_env_vars = ["PARENT", "TOPIC_ID", "SERVICE_ACCOUNT_EMAIL", "QUEUE_NAME"]
+
+for var in _required_env_vars:
+    assert_env_var(var)
+
 _parent = os.environ["PARENT"]
 _topic_path = os.environ["TOPIC_ID"]
+_service_account_email = os.environ["SERVICE_ACCOUNT_EMAIL"]
+_queue_name = os.environ["QUEUE_NAME"]
 
 _version = os.getenv("VERSION", "google-cloud-function")
+
+_api_request_counter = 0
 
 if "LOCATION_ALLOWLIST" in os.environ:
     _location_allowlist = [
@@ -27,17 +45,73 @@ else:
     _location_allowlist = None
 
 CLOUDASSET_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY", "ORG_POLICY", "ACCESS_POLICY"]
+Resource = discovery.Resource
 
+
+def safe_list(
+    resource: Resource, list_kwargs: dict, key: str, max_depth=1000, recursive=True
+) -> typing.Iterable[typing.Any]:
+    global _api_request_counter
+    """safe_list returns an iterable of all elements in the Resource."""
+    with tracing.tracer.start_as_current_span("safe_list") as span:
+        span.set_attribute("list_kwargs", json.dumps(list_kwargs))
+        span.set_attribute("key", key)
+
+        json_data = _request.get_json(force=True, silent=True)
+        if json_data and list_kwargs.get('contentType') == json_data.get('contentType'):
+            page_token = json_data.get('pageToken')
+            if page_token is not None:
+                list_kwargs['pageToken'] = page_token
+
+        for i in range(max_depth):
+            span.set_attribute("depth", i)
+            _api_request_counter += 1
+            result: dict = resource.list(**list_kwargs).execute()
+            for r in result.get(key, []):
+                yield r
+
+            if result.get("nextPageToken", "") == "":
+                return
+            elif recursive:
+                list_kwargs['pageToken'] = result["nextPageToken"]
+                list_kwargs['recursive'] = True
+                
+                delay = timedelta(seconds=random.randint(30, 60))
+                now = datetime.now() + timedelta(seconds=_api_request_counter * 1.5) + delay
+                timestamp = Timestamp()
+                timestamp.FromDatetime(now)
+
+                client = tasks_v2.CloudTasksClient()
+                task = {
+                    'http_request': {  # Specify the type of request.
+                        'http_method': 'POST',
+                        'url': 'https://us-east1-content-eng-colin.cloudfunctions.net/chutchinson-env',
+                        'oidc_token': {
+                            'service_account_email': _service_account_email,
+                        },
+                    },
+                    'schedule_time': timestamp
+                }
+
+                task['http_request']['body'] = json.dumps(list_kwargs).encode('utf-8')
+                
+                response = client.create_task(request={'parent': _queue_name, 'task': task})
+                print(f"Created task {response.name}")
+                return
+            list_kwargs["pageToken"] = result["nextPageToken"]
+
+        raise Exception("max_depth exceeded")
 
 def list_service_accounts(project_id: str) -> typing.List[dict]:
     with tracing.tracer.start_as_current_span("list_service_accounts") as span:
         span.set_attribute("project_id", project_id)
         res = []
         with discovery.build("iam", "v1") as service:
-            accounts = lib.safe_list(
+            accounts = safe_list(
                 service.projects().serviceAccounts(),
                 {"name": "projects/" + project_id},
                 "accounts",
+                recursive=False
             )
             for account in accounts:
                 res.append(
@@ -51,6 +125,7 @@ def list_service_accounts(project_id: str) -> typing.List[dict]:
 
 
 def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
+    global _api_request_counter
     with tracing.tracer.start_as_current_span(
         "list_instance_to_instance_groups"
     ) as span:
@@ -58,27 +133,23 @@ def list_instance_to_instance_groups(project_id: str) -> typing.List[dict]:
         res = []
         with compute_v1.ZonesClient() as zones_client:
             with compute_v1.InstanceGroupsClient() as instance_group_client:
-
+                _api_request_counter += 1
                 zones = zones_client.list(project=project_id)
 
                 zones_skipped = 0
                 num_instance_groups = 0
                 for zone in zones:
-                    if _location_allowlist is not None:
-                        skipZone = True
-                        for l in _location_allowlist:
-                            if zone.name.startswith(l):
-                                skipZone = False
-                                break
-                        if skipZone:
-                            zones_skipped += 1
-                            continue
+                    if _location_allowlist is not None and not any(zone.name.startswith(location) for location in _location_allowlist):
+                        zones_skipped += 1
+                        continue
+                    _api_request_counter += 1
                     instance_groups = instance_group_client.list(
                         project=project_id, zone=zone.name
                     )
 
                     for instance_group in instance_groups:
                         num_instance_groups += 1
+                        _api_request_counter += 1
                         instances = instance_group_client.list_instances(
                             project=project_id,
                             instance_group=instance_group.name,
@@ -108,19 +179,21 @@ def list_cloud_scheduler_jobs(project_id: str) -> typing.List[dict]:
         res = []
 
         with discovery.build("cloudscheduler", "v1") as service:
-            locations = lib.safe_list(
+            locations = safe_list(
                 service.projects().locations(),
                 {"name": "projects/" + project_id},
                 "locations",
+                recursive=False
             )
             for l in locations:
                 if _location_allowlist is not None:
                     if l["locationId"] not in _location_allowlist:
                         continue
-                jobs = lib.safe_list(
+                jobs = safe_list(
                     service.projects().locations().jobs(),
                     {"parent": l["name"]},
                     "jobs",
+                    recursive=False
                 )
                 for job in jobs:
                     res.append(
@@ -144,10 +217,11 @@ def list_projects(parent: str) -> typing.List[dict]:
                 p = service.projects().get(name=parent).execute()
                 projects = [p]
             else:
-                projects = lib.safe_list(
+                projects = safe_list(
                     service.projects(),
                     {"parent": parent},
                     "projects",
+                    recursive=False
                 )
             for p in projects:
                 res.append(
@@ -166,10 +240,11 @@ def list_assets(parent: str, content_type: str) -> typing.List[dict]:
         span.set_attribute("content_type", content_type)
         res = []
         with discovery.build("cloudasset", "v1") as service:
-            assets = lib.safe_list(
+            assets = safe_list(
                 service.assets(),
                 {"parent": parent, "contentType": content_type},
                 "assets",
+                recursive=True
             )
             for a in assets:
                 res.append(
@@ -209,76 +284,102 @@ per_project_registry: typing.List[PerProjectRegistry] = [
 
 
 def main(request) -> typing.Tuple[str, int]:
+    global _api_request_counter
+    global _request
+    _request = request
     with tracing.tracer.start_as_current_span("main") as span:
-        publisher = pubsub_v1.PublisherClient()
+        try:
+            publisher = pubsub_v1.PublisherClient()
 
-        def publish(records: typing.List[dict], observe_gcp_kind: str):
-            futures = []
-            for r in records:
-                data = json.dumps(r).encode("utf-8")
-                original_length = len(data)
-                compressed_data = gzip.compress(data)
+            def publish(records: typing.List[dict], observe_gcp_kind: str):
+                futures = []
+                for r in records:
+                    data = json.dumps(r).encode("utf-8")
+                    original_length = len(data)
+                    compressed_data = gzip.compress(data)
 
+                    try:
+                        f = publisher.publish(
+                            _topic_path,
+                            data=compressed_data,
+                            observe_gcp_kind=observe_gcp_kind,
+                            observe_cloud_function_version=_version,
+                            observe_original_length=str(len(data)),
+                            observe_content_encoding="gzip",
+                        )
+                        futures.append(f)
+                    except exceptions.MessageTooLargeError:
+                        span.add_event(
+                            "message_too_large", {"observe_gcp_kind": observe_gcp_kind}
+                        )
+                print(f"Publishing {len(records)} records of type: {observe_gcp_kind}")
+                for f in futures:
+                    _ = f.result()
+
+            request_data = None
+            content_type = None
+            if hasattr(request, 'get_json'):
+                request_data = request.get_json(force=True, silent=True)
+                content_type = request_data.get('contentType', None) if request_data else None
+
+            if content_type is not None:
+                content_types = [content_type]
+            else:
+                content_types = CLOUDASSET_CONTENT_TYPES
+            
+            for ct in content_types:
                 try:
-                    f = publisher.publish(
-                        _topic_path,
-                        data=compressed_data,
-                        observe_gcp_kind=observe_gcp_kind,
-                        observe_cloud_function_version=_version,
-                        observe_original_length=str(len(data)),
-                        observe_content_encoding="gzip",
+                    asset_records = list_assets(_parent, ct)
+                    publish(
+                        asset_records,
+                        # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+                        # to be changed.
+                        "https://cloud.google.com/asset-inventory/docs/reference/rest/v1/assets",
                     )
-                    futures.append(f)
-                except exceptions.MessageTooLargeError:
-                    span.add_event(
-                        "message_too_large", {"observe_gcp_kind": observe_gcp_kind}
-                    )
-            for f in futures:
-                _ = f.result()
-
-        request_data = request.get_json(force=True, silent=True)
-        content_type = request_data.get('content_type', None) if request_data else None
-
-        if content_type is not None:
-            content_types = [content_type]
-        else:
-            content_types = CLOUDASSET_CONTENT_TYPES
-        
-        for ct in content_types:
-            try:
-                asset_records = list_assets(_parent, ct)
-                publish(
-                    asset_records,
-                    # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-                    # to be changed.
-                    "https://cloud.google.com/asset-inventory/docs/reference/rest/v1/assets",
-                )
-            except Exception as e:
-                traceback.print_exception(e)
-
-        project_records = list_projects(_parent)
-        publish(
-            project_records,
-            # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-            # to be changed.
-            "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
-        )
-
-        for p in project_records:
-            pid = p["project"]["projectId"]
-            for r in per_project_registry:
-                try:
-                    records = r.list_func(pid)
-                    publish(records, r.observe_gcp_kind)
                 except Exception as e:
                     traceback.print_exception(e)
 
-        tracing.provider.force_flush()
+            if request_data is not None and request_data.get('recursive', False):
+                return "Ok", 200
 
-        return "Ok", 200
+            project_records = list_projects(_parent)
+            publish(
+                project_records,
+                # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+                # to be changed.
+                "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+            )
+
+            for project in project_records:
+                project_id = project["project"]["projectId"]
+                for registry in per_project_registry:
+                    try:
+                        _api_request_counter += 1
+                        records = registry.list_func(project_id)
+                        publish(records, registry.observe_gcp_kind)
+                    except Exception as e:
+                        traceback.print_exception(e)
+
+            tracing.provider.force_flush()
+
+            return "Ok", 200
+        except Exception as e:
+            traceback.print_exception(e)
+            return "Internal Server Error", 500
 
 
 _PUBSUB_MAX_SIZE_BYTES = 1e7 - 1e6  # Subtract 1e6 just to be safe
+
+if __name__ == "__main__":
+    # Create a mock request object
+    request = Mock()
+
+    # Add the get_json method to the mock object
+    request.get_json = Mock(return_value=json.loads(
+        '{"content_type": "RESOURCE"}'))
+
+    # Call the function with the mock request
+    main(request)
 
 
 class Test(unittest.TestCase):
