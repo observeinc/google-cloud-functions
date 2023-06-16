@@ -41,3 +41,19 @@ test-pubsub-output:
 .PHONY: fmt
 fmt:
 	python -m black .
+
+.PHONY: build run
+
+# Variables
+IMAGE_NAME=observe/google-cloud-functions
+CONTAINER_NAME=observe-gcp
+PROJECT_ID?=$(shell echo "default_project_id")
+UID=$(shell id -u)
+GID=$(shell id -g)
+
+build:
+	docker build --build-arg UID=$(UID) --build-arg GID=$(GID) -t $(IMAGE_NAME) .
+
+dev: build
+	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/src -e PROJECT_ID=$(PROJECT_ID) -u $(shell id -u):$(shell id -g) $(IMAGE_NAME)
+
