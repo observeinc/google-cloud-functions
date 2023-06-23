@@ -96,23 +96,23 @@ DEFAULT_CONTENT_TYPES = [
     "IAM_POLICY"]
 
 
-def setup_logging():
-    """
-    Set up Google Cloud logging for the application.
+# def setup_logging():
+#     """
+#     Set up Google Cloud logging for the application.
 
-    Connects the default Cloud Logging handler to the root Python logger,
-    so that all logs will automatically be sent to Cloud Logging.
-    """
-    # Instantiates a client
-    client = google.cloud.logging.Client()
+#     Connects the default Cloud Logging handler to the root Python logger,
+#     so that all logs will automatically be sent to Cloud Logging.
+#     """
+#     # Instantiates a client
+#     client = google.cloud.logging.Client()
 
-    # Connects the logger to the root logging handler
-    client.get_default_handler()
-    client.setup_logging()
+#     # Connects the logger to the root logging handler
+#     client.get_default_handler()
+#     client.setup_logging()
 
 
 # Call the setup_logging function
-setup_logging()
+# setup_logging()
 
 
 def export_assets(request):
@@ -128,7 +128,7 @@ def export_assets(request):
     """
     data = request.get_json()
 
-    logging.info(f"Received request data: {json.dumps(data, indent=2)}")
+    # logging.info(f"Received request data: {json.dumps(data, indent=2)}")
 
     asset_types = (data.get("asset_types", DEFAULT_ASSET_TYPES)
                    if data else DEFAULT_ASSET_TYPES)
@@ -150,7 +150,7 @@ def export_assets(request):
     client = asset_v1.AssetServiceClient()
 
     for content_type in content_types:
-        logging.info(f"Processing Content type: {content_type}")
+        # logging.info(f"Processing Content type: {content_type}")
         if content_type not in content_type_map:
             raise ValueError(f"Invalid CONTENT_TYPE: {content_type}")
 
@@ -173,9 +173,10 @@ def export_assets(request):
             client.export_assets(request=request)
 
         except Exception as e:
-            logging.error(
-                f"Failed to export content type {content_type}. Error: {e}")
-            logging.error(traceback.format_exc())
+            print('wat')
+            #logging.error(
+            #    f"Failed to export content type {content_type}. Error: {e}")
+            #logging.error(traceback.format_exc())
 
     return "Asset export triggered", 200
 
@@ -198,32 +199,20 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(data["bucket"])
 
-    logging.info(
-        f"Getting blob with name {data['name']} from bucket {data['bucket']}")
-
     blob = bucket.get_blob(data["name"])
 
     # Check if blob is None
     if blob is None:
-        logging.info(
-            f"No blob with name {data['name']} found in bucket {data['bucket']}. Exiting..."
-        )
         return
 
     # Skip processing if filename starts with "temp"
     if blob.name.startswith("temp"):
-        logging.info(
-            f"Skipping blob with name {data['name']} as it starts with 'temp'."
-        )
         return
 
     content = blob.download_as_bytes()
 
     # exit early if content is empty
     if not content:
-        logging.info(
-            f"Blob {data['name']} in bucket {data['bucket']} is empty. Exiting..."
-        )
         return
 
     # parse the content as a list of JSON objects
@@ -231,7 +220,6 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         json_objects = [json.loads(line)
                         for line in content.splitlines() if line]
     except json.JSONDecodeError as e:
-        logging.info(f"JSON decoding error: {e}")
         return
 
     # Extract content_type and asset_type from the GCS bucket path
@@ -239,7 +227,6 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     path = data["name"][len(gcs_prefix):]
     folders = path.split("/")
     if len(folders) < 3:
-        logging.error(f"Invalid bucket path format: {data['name']}")
         return
 
     content_type = folders[1]
@@ -265,9 +252,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     blob.delete()
 
 # Manual call for testing
-# mock_request = Mock()
-# mock_request.get_json.return_value = {
-#    "asset_types": ["storage.googleapis.com.*"],
-#    "content_types": ["RESOURCE"]
-# }
-# export_assets(mock_request)
+mock_request = Mock()
+mock_request.get_json.return_value = {
+   "asset_types": ["storage.googleapis.com.*"],
+   "content_types": ["RESOURCE"]
+}
+export_assets(mock_request)
