@@ -1,8 +1,6 @@
-import datetime
 import gzip
 import logging
 import traceback
-import google.cloud.logging
 from unittest.mock import Mock
 from google.cloud import asset_v1, storage, pubsub_v1
 from cloudevents.http import CloudEvent
@@ -96,25 +94,6 @@ DEFAULT_CONTENT_TYPES = [
     "IAM_POLICY"]
 
 
-# def setup_logging():
-#     """
-#     Set up Google Cloud logging for the application.
-
-#     Connects the default Cloud Logging handler to the root Python logger,
-#     so that all logs will automatically be sent to Cloud Logging.
-#     """
-#     # Instantiates a client
-#     client = google.cloud.logging.Client()
-
-#     # Connects the logger to the root logging handler
-#     client.get_default_handler()
-#     client.setup_logging()
-
-
-# Call the setup_logging function
-# setup_logging()
-
-
 def export_assets(request):
     """
     Export assets from Google Cloud to a specified storage bucket.
@@ -126,66 +105,69 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
+    logging.info("Received export assets request")
     try:
         data = request.get_json()
-
-        # logging.info(f"Received request data: {json.dumps(data, indent=2)}")
-
-        asset_types = (data.get("asset_types", DEFAULT_ASSET_TYPES)
-                    if data else DEFAULT_ASSET_TYPES)
-        content_types = (
-            data.get("content_type", DEFAULT_CONTENT_TYPES)
-            if data
-            else DEFAULT_CONTENT_TYPES
-        )
-
-        # Map the content type string to the corresponding ContentType enum
-        content_type_map = {
-            "RESOURCE": asset_v1.ContentType.RESOURCE,
-            "IAM_POLICY": asset_v1.ContentType.IAM_POLICY,
-            "ORG_POLICY": asset_v1.ContentType.ORG_POLICY,
-            "ACCESS_POLICY": asset_v1.ContentType.ACCESS_POLICY,
-        }
-
-        # Initialize the AssetService client
-        client = asset_v1.AssetServiceClient()
-
-        for content_type in content_types:
-            # logging.info(f"Processing Content type: {content_type}")
-            if content_type not in content_type_map:
-                raise ValueError(f"Invalid CONTENT_TYPE: {content_type}")
-
-            try:
-                # Create an output_config object
-                output_config = asset_v1.OutputConfig()
-                output_config.gcs_destination.uri_prefix = (
-                    f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
-                )
-
-                # Create an ExportAssetsRequest object
-                request = asset_v1.ExportAssetsRequest(
-                    parent=PARENT,
-                    content_type=content_type_map[content_type],
-                    asset_types=asset_types,
-                    output_config=output_config,
-                )
-
-                # Call the export_assets method
-                client.export_assets(request=request)
-
-            except Exception as e:
-                traceback.print_exception(e)
-                #logging.error(
-                #    f"Failed to export content type {content_type}. Error: {e}")
-                #logging.error(traceback.format_exc())
-
-        return "Asset export triggered", 200
     except Exception as e:
-        traceback.print_exception(e)
-        return "failed", 500
+        logging.error(
+            f"Failed decode json from request {request}. Error: {e}")
+        logging.error(traceback.format_exc())
+        return
 
+    if not data:
+        logging.warning(
+            "Request data is empty, using default asset types and content types")
+
+    asset_types = (data.get("asset_types", DEFAULT_ASSET_TYPES)
+                   if data else DEFAULT_ASSET_TYPES)
+    content_types = (
+        data.get("content_type", DEFAULT_CONTENT_TYPES)
+        if data
+        else DEFAULT_CONTENT_TYPES
+    )
+
+    content_type_map = {
+        "RESOURCE": asset_v1.ContentType.RESOURCE,
+        "IAM_POLICY": asset_v1.ContentType.IAM_POLICY,
+        "ORG_POLICY": asset_v1.ContentType.ORG_POLICY,
+        "ACCESS_POLICY": asset_v1.ContentType.ACCESS_POLICY,
+    }
+
+    client = asset_v1.AssetServiceClient()
+
+    for content_type in content_types:
+        logging.info(f"Processing content type: {content_type}")
+        if content_type not in content_type_map:
+            logging.error(f"Invalid CONTENT_TYPE: {content_type}")
+            raise ValueError(f"Invalid CONTENT_TYPE: {content_type}")
+
+        try:
+            output_config = asset_v1.OutputConfig()
+            output_config.gcs_destination.uri_prefix = (
+                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
+            )
+
+            request = asset_v1.ExportAssetsRequest(
+                parent=PARENT,
+                content_type=content_type_map[content_type],
+                asset_types=asset_types,
+                output_config=output_config,
+            )
+
+            client.export_assets(request=request)
+            logging.info(
+                f"Asset export triggered for content type: {content_type}")
+
+        except Exception as e:
+            logging.error(
+                f"Failed to export content type {content_type}. Error: {e}")
+            logging.error(traceback.format_exc())
+
+    return "Asset export triggered", 200
 
 # Triggered by a change in a storage bucket
+
+
 @functions_framework.cloud_event
 def gcs_to_pubsub(cloud_event: CloudEvent):
     """
@@ -199,6 +181,8 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     Returns:
         None
     """
+    logging.info("Cloud event triggered")
+
     data = cloud_event.data
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(data["bucket"])
@@ -207,16 +191,19 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Check if blob is None
     if blob is None:
+        logging.warning("Blob is None, returning without further action")
         return
 
     # Skip processing if filename starts with "temp"
     if blob.name.startswith("temp"):
+        logging.info("Blob name starts with 'temp', skipping processing")
         return
 
     content = blob.download_as_bytes()
 
     # exit early if content is empty
     if not content:
+        logging.warning("Content is empty, returning without further action")
         return
 
     # parse the content as a list of JSON objects
@@ -231,6 +218,8 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     path = data["name"][len(gcs_prefix):]
     folders = path.split("/")
     if len(folders) < 3:
+        logging.warning(
+            "Path structure unexpected, returning without further action")
         return
 
     content_type = folders[1]
@@ -253,12 +242,17 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         )
 
     # delete the file from the bucket
-    blob.delete()
+    if blob.exists():
+        blob.delete()
+        logging.info("Blob successfully deleted")
+    else:
+        logging.warning("Blob not found, could not delete")
+
 
 # Manual call for testing
-mock_request = Mock()
-mock_request.get_json.return_value = {
-   "asset_types": ["storage.googleapis.com.*"],
-   "content_types": ["RESOURCE"]
-}
-export_assets(mock_request)
+# mock_request = Mock()
+# mock_request.get_json.return_value = {
+#     "asset_types": ["storage.googleapis.com.*"],
+#     "content_types": ["RESOURCE"]
+# }
+# export_assets(mock_request)
