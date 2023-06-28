@@ -217,13 +217,13 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     gcs_prefix = f"{bucket.name}/"
     path = data["name"][len(gcs_prefix):]
     folders = path.split("/")
-    if len(folders) < 3:
+    if len(folders) < 4:
         logging.warning(
             "Path structure unexpected, returning without further action")
         return
 
-    content_type = folders[1]
-    asset_type = folders[2]
+    content_type = folders[2]
+    asset_type = folders[3]
 
     # publish to Pub/Sub
     publisher = pubsub_v1.PublisherClient()
