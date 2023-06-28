@@ -28,7 +28,7 @@ We utilize Docker and a Makefile for build and test processes.
 
 Build the Docker image:
 
-```
+```sh
 make docker/build
 ```
 
