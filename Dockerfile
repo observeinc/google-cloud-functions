@@ -11,7 +11,7 @@ WORKDIR /install
 ENV PATH=$PATH:/usr/local/bin/google-cloud-sdk/bin/
 
 # Install Google Cloud SDK
-RUN apt-get update -y && apt-get install -y curl && \
+RUN apt-get update -y && apt-get install -y curl make && \
     curl https://sdk.cloud.google.com > install.sh && \
     bash install.sh --disable-prompts --install-dir=/usr/local/bin && \
     gcloud --version && \

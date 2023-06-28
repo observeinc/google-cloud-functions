@@ -17,8 +17,11 @@ help:
 	@echo "  prerelease        Generate a new pre-release."
 	@echo "  upload            Upload the zipfile to Google Cloud Storage."
 	@echo "  fmt               Format the Python code using Black."
-	@echo "  build             Build the Docker image."
-	@echo "  dev               Run the Docker image."
+	@echo "  install           Install the required packages."
+	@echo "  test              Run the tests."
+	@echo "  docker/build      Build the Docker image."
+	@echo "  docker/dev        Run the Docker image."
+	@echo "  docker/test       Run the tests inside the Docker image."
 	@echo "  help              Show this help message."
 
 .PHONY: changelog
@@ -46,10 +49,39 @@ upload:
 fmt:
 	python -m black .
 
-.PHONY: build
-build:
-	docker build --build-arg UID=$(UID) --build-arg GID=$(GID) -t $(IMAGE_NAME) .
+.PHONY: install
+install:
+	pip install -r requirements.txt -r requirements-dev.txt
 
-.PHONY: dev
-dev: build
-	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/src -e PROJECT_ID=$(PROJECT_ID) -u $(UID):$(GID) $(IMAGE_NAME)
+.PHONY: test
+test: install
+	PARENT=testing \
+	PROJECT_ID=placeholder \
+	TOPIC_ID=placeholder \
+	OUTPUT_BUCKET=placeholder \
+	python -m pytest tests/
+
+.PHONY: clean
+clean: docker/clean
+	find . -name "*.pyc" -type f -delete
+	find . -name "*.pyo" -type f -delete
+	find . -name "__pycache__" -type d -delete
+	find . -name ".pytest_cache" -type d -delete
+
+.PHONY: docker/clean
+docker/clean:
+	docker rmi -f $(IMAGE_NAME)
+
+.PHONY: docker/build
+docker/build:
+	@if [ -z $(shell docker images -q $(IMAGE_NAME)) ]; then \
+		docker build --build-arg UID=$(UID) --build-arg GID=$(GID) -t $(IMAGE_NAME) .; \
+	fi
+
+.PHONY: docker/dev
+docker/dev: docker/build
+	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/src -e PROJECT_ID=$(PROJECT_ID) -e ENV=dev -u $(UID):$(GID) $(IMAGE_NAME)
+
+.PHONY: docker/test
+docker/test: docker/build
+	docker run -it --rm -v $(PWD):/src -e PROJECT=test -e ENV=test -u $(UID):$(GID) $(IMAGE_NAME) make test

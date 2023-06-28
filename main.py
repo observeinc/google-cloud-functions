@@ -159,15 +159,13 @@ def export_assets(request):
                 f"Asset export triggered for content type: {content_type}")
 
         except Exception as e:
-            logging.error(
-                f"Failed to export content type {content_type}. Error: {e}")
+            logging.error(f"Failed to export content type {content_type}. Error: {e}")
             logging.error(traceback.format_exc())
+            return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
 
 # Triggered by a change in a storage bucket
-
-
 @functions_framework.cloud_event
 def gcs_to_pubsub(cloud_event: CloudEvent):
     """

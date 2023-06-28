@@ -22,6 +22,33 @@ Requires having a GCP account and docker installed
 PROJECT_ID=foobar make dev
 ```
 
+## Docker and Makefile Usage
+
+We utilize Docker and a Makefile for build and test processes.
+
+Build the Docker image:
+
+```
+make docker/build
+```
+
+Run tests inside the Docker container:
+```
+make docker/test
+```
+
+Clean the Docker images:
+```
+make docker/clean
+```
+
+## Testing
+
+We use Python's unittest framework for testing. Run the test suite with:
+```
+make test
+```
+
 ## Contributing
 
 - Fork it (https://github.com/observeinc/google-cloud-functions/fork)

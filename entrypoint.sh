@@ -5,10 +5,12 @@ if [ -n "${DEBUG:-}" ]; then
     set -x
 fi
 
-echo "Setting project"
-gcloud config set project $PROJECT_ID
+if [ "${ENV}" == "dev" ]; then
+    echo "Setting project"
+    gcloud config set project $PROJECT_ID
 
-echo "Running gcloud auth application-default login"
-gcloud auth application-default login
+    echo "Running gcloud auth application-default login"
+    gcloud auth application-default login
+fi
 
 exec "$@"
