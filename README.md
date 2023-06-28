@@ -45,7 +45,7 @@ make docker/clean
 ## Testing
 
 We use Python's unittest framework for testing. Run the test suite with:
-```
+```sh
 make test
 ```
 
