@@ -38,7 +38,7 @@ make docker/test
 ```
 
 Clean the Docker images:
-```
+```sh
 make docker/clean
 ```
 
