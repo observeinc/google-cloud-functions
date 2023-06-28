@@ -11,7 +11,7 @@ to a pub/sub service. On the receiving end, we poll the pub/sub for these resour
 
 ## Installation
 
-[Terraform Installation Module](https://github.com/observeinc/terraform-google-collection/tree/main)
+The [`observeinc/collection/google`](https://registry.terraform.io/modules/observeinc/collection/google/latest) module installs this application as a Google Cloud function along with other required resources.
 
 
 ## Development
