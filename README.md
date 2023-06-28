@@ -16,7 +16,9 @@ The [`observeinc/collection/google`](https://registry.terraform.io/modules/obser
 
 ## Development
 
-Requires having a GCP account and docker installed
+**Requirements:**
+- A Google account with access to Google Cloud
+- A Docker installation on your machine
 
 ```
 PROJECT_ID=foobar make dev
