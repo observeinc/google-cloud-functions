@@ -33,7 +33,7 @@ make docker/build
 ```
 
 Run tests inside the Docker container:
-```
+```sh
 make docker/test
 ```
 
