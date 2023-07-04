@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import gzip
 import logging
 import traceback
@@ -89,9 +90,7 @@ DEFAULT_ASSET_TYPES = [
     "vpcaccess.googleapis.com.*",
     "workflows.googleapis.com.*",
 ]
-DEFAULT_CONTENT_TYPES = [
-    "RESOURCE",
-    "IAM_POLICY"]
+DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
 
 
 def export_assets(request):
@@ -109,17 +108,18 @@ def export_assets(request):
     try:
         data = request.get_json()
     except Exception as e:
-        logging.error(
-            f"Failed decode json from request {request}. Error: {e}")
+        logging.error(f"Failed decode json from request {request}. Error: {e}")
         logging.error(traceback.format_exc())
         return
 
     if not data:
         logging.warning(
-            "Request data is empty, using default asset types and content types")
+            "Request data is empty, using default asset types and content types"
+        )
 
-    asset_types = (data.get("asset_types", DEFAULT_ASSET_TYPES)
-                   if data else DEFAULT_ASSET_TYPES)
+    asset_types = (
+        data.get("asset_types", DEFAULT_ASSET_TYPES) if data else DEFAULT_ASSET_TYPES
+    )
     content_types = (
         data.get("content_type", DEFAULT_CONTENT_TYPES)
         if data
@@ -155,8 +155,7 @@ def export_assets(request):
             )
 
             client.export_assets(request=request)
-            logging.info(
-                f"Asset export triggered for content type: {content_type}")
+            logging.info(f"Asset export triggered for content type: {content_type}")
 
         except Exception as e:
             logging.error(f"Failed to export content type {content_type}. Error: {e}")
@@ -164,6 +163,7 @@ def export_assets(request):
             return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
+
 
 # Triggered by a change in a storage bucket
 @functions_framework.cloud_event
@@ -206,18 +206,16 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # parse the content as a list of JSON objects
     try:
-        json_objects = [json.loads(line)
-                        for line in content.splitlines() if line]
+        json_objects = [json.loads(line) for line in content.splitlines() if line]
     except json.JSONDecodeError as e:
         return
 
     # Extract content_type and asset_type from the GCS bucket path
     gcs_prefix = f"{bucket.name}/"
-    path = data["name"][len(gcs_prefix):]
+    path = data["name"][len(gcs_prefix) :]
     folders = path.split("/")
     if len(folders) < 4:
-        logging.warning(
-            "Path structure unexpected, returning without further action")
+        logging.warning("Path structure unexpected, returning without further action")
         return
 
     content_type = folders[2]
@@ -229,11 +227,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         message = json.dumps(json_object)
         publisher.publish(
             PUBSUB_TOPIC,
-            data=gzip.compress(
-                message.encode()),
+            data=gzip.compress(message.encode()),
             observe_content_encoding="gzip",
-            observe_original_length=str(
-                len(message)),
+            observe_original_length=str(len(message)),
             observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
