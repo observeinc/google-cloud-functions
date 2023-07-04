@@ -1,8 +1,63 @@
 # google-cloud-functions
 
-This repository contains the source code for the Observe Google Cloud Function(s).
-The code fetches data from various GCP REST APIs and forwards it to Pub/Sub.
-The semi-structured data in Pub/Sub is eventually parsed in Observe.
+This is a Python-based project that uses the Google Cloud Platform (GCP) Asset API
+to ingest GCP resources. The assets are then sent to a GCP bucket and subsequently
+to a pub/sub service. On the receiving end, we poll the pub/sub for these resources
+
+## Architecture and Design
+
+- Use the GCP Asset API to export assets to a GCP Bucket
+- Publish resources from the GCP bucket to a pub/sub service
+
+## Installation
+
+The [`observeinc/collection/google`](https://registry.terraform.io/modules/observeinc/collection/google/latest) module installs this application as a Google Cloud function along with other required resources.
+
+
+## Development
+
+**Requirements:**
+- A Google account with access to Google Cloud
+- A Docker installation on your machine
+
+```
+PROJECT_ID=foobar make dev
+```
+
+## Docker and Makefile Usage
+
+We utilize Docker and a Makefile for build and test processes.
+
+Build the Docker image:
+
+```sh
+make docker/build
+```
+
+Run tests inside the Docker container:
+```sh
+make docker/test
+```
+
+Clean the Docker images:
+```sh
+make docker/clean
+```
+
+## Testing
+
+We use Python's unittest framework for testing. Run the test suite with:
+```sh
+make test
+```
+
+## Contributing
+
+- Fork it (https://github.com/observeinc/google-cloud-functions/fork)
+- Create your feature branch (git checkout -b feature/fooBar)
+- Commit your changes (git commit -am 'Add some fooBar')
+- Push to the branch (git push origin feature/fooBar)
+- Create a new Pull Request
 
 See https://www.notion.so/observeinc/GCP-collection-4af5eaa49951466fad879acfbc2c6cd9#107096e7e8794d5babc8ceec653a63ab
 for info on contributing to this repo.
