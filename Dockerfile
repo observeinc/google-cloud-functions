@@ -1,5 +1,5 @@
 # Use a builder image for installing google cloud sdk
-FROM python:3.8-slim-buster
+FROM python:3.11-slim-buster
 
 # Accept the user ID and group ID as build arguments
 ARG UID=1000
