@@ -186,8 +186,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     bucket = storage_client.get_bucket(data["bucket"])
 
     blob = bucket.get_blob(data["name"])
-    logging.info(f"Data name is {data["name"]}")
-    Logging.info(f"data is {data}")
+    name = data["name"]
+    logging.info(f'Data name is {data["name"]}')
+    Logging.info(f'data is {data}')
 
     # Check if blob is None
     if blob is None:
