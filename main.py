@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
-import gzip
-import logging
-import traceback
-from unittest.mock import Mock
-from google.cloud import asset_v1, storage, pubsub_v1
-from cloudevents.http import CloudEvent
 import functions_framework
-from typing import List, Dict
-import os
+import gzip
 import json
+import logging
+import os
+import traceback
+
+from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
+from google.cloud.pubsub_v1.publisher import exceptions
+from googleapiclient import discovery
+from cloudevents.http import CloudEvent
+from typing import Any, Callable, Dict, Iterable, List
+from unittest.mock import Mock
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"].strip()
 PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
+
 DEFAULT_ASSET_TYPES = [
     "aiplatform.googleapis.com.*",
     "anthos.googleapis.com.*",
@@ -90,7 +94,183 @@ DEFAULT_ASSET_TYPES = [
     "vpcaccess.googleapis.com.*",
     "workflows.googleapis.com.*",
 ]
+
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
+
+def publish(records: List[dict], observe_gcp_kind: str):
+    for r in records:
+        data = json.dumps(r).encode("utf-8")
+        original_length = len(data)
+        compressed_data = gzip.compress(data)
+
+        publisher = pubsub_v1.PublisherClient()
+        publisher.publish(
+            PUBSUB_TOPIC,
+            data=compressed_data,
+            observe_gcp_kind=observe_gcp_kind,
+            observe_original_length=str(len(data)),
+            observe_content_encoding="gzip",
+        )
+        # logging.debug(f"published {data}")
+
+
+def safe_list(
+    resource: discovery.Resource, list_kwargs: dict, key: str, max_depth=1000
+) -> Iterable[Any]:
+    """safe_list returns an iterable of all elements in the Resource."""
+
+    for i in range(max_depth):
+        result: dict = resource.list(**list_kwargs).execute()
+        for r in result.get(key, []):
+            yield r
+
+        if result.get("nextPageToken", "") == "":
+            return
+        list_kwargs["pageToken"] = result["nextPageToken"]
+
+    raise Exception("max_depth exceeded")
+
+def list_service_accounts(project_id: str) -> List[dict]:
+        res = []
+        with discovery.build("iam", "v1") as service:
+            accounts = safe_list(
+                service.projects().serviceAccounts(),
+                {"name": "projects/" + project_id},
+                "accounts",
+            )
+            for account in accounts:
+                res.append(
+                    {
+                        "projectId": project_id,
+                        "account": account,
+                    }
+                )
+        return res
+
+def list_instance_to_instance_groups(project_id: str) -> List[dict]:
+        res = []
+        with compute_v1.ZonesClient() as zones_client:
+            with compute_v1.InstanceGroupsClient() as instance_group_client:
+
+                zones = zones_client.list(project=project_id)
+
+                for zone in zones:
+                    instance_groups = instance_group_client.list(
+                        project=project_id, zone=zone.name
+                    )
+
+                    for instance_group in instance_groups:
+                        instances = instance_group_client.list_instances(
+                            project=project_id,
+                            instance_group=instance_group.name,
+                            zone=zone.name,
+                        )
+
+                        for instance in instances:
+                            res.append(
+                                {
+                                    "projectId": project_id,
+                                    "zoneName": zone.name,
+                                    "instanceGroupId": instance_group.id,
+                                    "instanceUrl": instance.instance,
+                                }
+                            )
+        return res
+
+def list_cloud_scheduler_jobs(project_id: str) -> List[dict]:
+        res = []
+
+        with discovery.build("cloudscheduler", "v1") as service:
+            locations = safe_list(
+                service.projects().locations(),
+                {"name": "projects/" + project_id},
+                "locations",
+            )
+            for l in locations:
+                jobs = safe_list(
+                    service.projects().locations().jobs(),
+                    {"parent": l["name"]},
+                    "jobs",
+                )
+                for job in jobs:
+                    res.append(
+                        {
+                            "projectId": project_id,
+                            "locationId": l["locationId"],
+                            "job": job,
+                        }
+                    )
+
+        return res
+
+class PerProjectRegistry:
+    def __init__(
+        self,
+        list_func: Callable[[str], List[dict]],
+        observe_gcp_kind: str,
+    ) -> None:
+        self.list_func = list_func
+        self.observe_gcp_kind = observe_gcp_kind
+
+
+per_project_registry: List[PerProjectRegistry] = [
+    PerProjectRegistry(
+        list_service_accounts,
+        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
+    ),
+    PerProjectRegistry(
+        list_instance_to_instance_groups,
+        "https://cloud.google.com/asset-inventory/docs/supported-asset-types#INSTANCE_TO_INSTANCEGROUP",
+    ),
+    PerProjectRegistry(
+        list_cloud_scheduler_jobs,
+        "https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs",
+    ),
+]
+
+def list_projects(parent: str) -> List[dict]:
+    res = []
+    with discovery.build("cloudresourcemanager", "v3") as service:
+        if parent.startswith("projects"):
+            p = service.projects().get(name=parent).execute()
+            projects = [p]
+        else:
+            projects = safe_list(
+                service.projects(),
+                {"parent": parent},
+                "projects",
+            )
+        for p in projects:
+            res.append(
+                {
+                    "parent": parent,
+                    "project": p,
+                }
+            )
+    return res
+
+def rest_of_assets(request):
+    project_records = list_projects(PARENT)
+    # logging.warning(f"project_records:{project_records}")
+    # publish(
+    #     project_records,
+    #     # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+    #     # to be changed.
+    #     "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+    # )
+
+    if project_records:
+        for p in project_records:
+            pid = p["project"]["projectId"]
+            # logging.warning(f"pid is {pid}")
+            for r in per_project_registry:
+                try:
+                    records = r.list_func(pid)
+                    publish(records, r.observe_gcp_kind)
+                    # logging.warning(f"records is {records}")
+                except Exception as e:
+                    traceback.print_exception(e)
+
 
 
 def export_assets(request):
@@ -104,6 +284,7 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
+    rest_of_assets(request)
     logging.info("Received export assets request")
     try:
         data = request.get_json()
