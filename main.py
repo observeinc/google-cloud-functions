@@ -9,6 +9,7 @@ import functions_framework
 from typing import List, Dict
 import os
 import json
+import time
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
@@ -91,6 +92,8 @@ DEFAULT_ASSET_TYPES = [
     "workflows.googleapis.com.*",
 ]
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
+
+logging.basicConfig(level=os.environ["LOG_LEVEL"])
 
 
 def export_assets(request):
@@ -183,24 +186,35 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     data = cloud_event.data
     storage_client = storage.Client()
+    
     bucket = storage_client.get_bucket(data["bucket"])
 
     blob = bucket.get_blob(data["name"])
     name = data["name"]
     logging.info(f'Data name is {data["name"]}')
-    Logging.info(f'data is {data}')
+    logging.info(f'data is {data}')
 
     # Check if blob is None
     if blob is None:
         logging.warning("Blob is None, returning without further action")
         return
-
     # Skip processing if filename starts with "temp"
-    if blob.name.startswith("temp"):
-        logging.info("Blob name starts with 'temp', skipping processing")
+    if "/temp_" in blob.name:
+        logging.warning("Blob name starts with 'temp', skipping processing")
         return
+    
+    retries = 1
+    success = False
+    content = None
+    while retries <= 5 and success == False:
+        retries = retries + 1
+        time.sleep(5 * retries)
+        if blob.exists():
+            content = blob.download_as_bytes()
+            success = True
+        else:
+            logging.warning(f'data["name"] is {data["name"]}, blob.name is {blob.name}, and blob doesn\'t exist, sleeping and trying again..')
 
-    content = blob.download_as_bytes()
 
     # exit early if content is empty
     if not content:
@@ -211,6 +225,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     try:
         json_objects = [json.loads(line) for line in content.splitlines() if line]
     except json.JSONDecodeError as e:
+        logging.warning(f"JSON decode error: {e}")
         return
 
     # Extract content_type and asset_type from the GCS bucket path
@@ -218,14 +233,16 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     path = data["name"][len(gcs_prefix) :]
     folders = path.split("/")
     if len(folders) < 4:
-        logging.warning("Path structure unexpected, returning without further action")
+        logging.warning(f"Path structure unexpected, returning without further action. Path is {path}. Folders is {folders}")
         return
 
+    logging.warning("made it past folder section")
     content_type = folders[2]
     asset_type = folders[3]
 
     # publish to Pub/Sub
     publisher = pubsub_v1.PublisherClient()
+    logging.warning("Attempting to publish")
     for json_object in json_objects:
         message = json.dumps(json_object)
         publisher.publish(
@@ -237,11 +254,11 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
+    logging.warning("Going to delete blob now that I'm done")
     # delete the file from the bucket
     if blob.exists():
         blob.delete()
-        logging.info("Blob successfully deleted")
+        logging.warning(f"Deleted blob {blob.name}")
     else:
         logging.warning("Blob not found, could not delete")
 

@@ -42,7 +42,7 @@ prerelease:
 .PHONY: upload
 upload:
 	find $(PYTHON_FILES) | zip ${ZIPFILE} requirements.txt -@
-	gcloud storage cp --quiet ${ZIPFILE} gs://$(BUCKET_NAME)/$(TARGET).zip
+	gcloud storage cp --quiet ${ZIPFILE} gs://$(BUCKET_NAME)/testinglogging.zip
 	rm ${ZIPFILE}
 
 .PHONY: fmt
