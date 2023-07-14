@@ -251,13 +251,12 @@ def list_projects(parent: str) -> List[dict]:
 
 def rest_of_assets(request):
     project_records = list_projects(PARENT)
-    # logging.warning(f"project_records:{project_records}")
-    # publish(
-    #     project_records,
-    #     # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
-    #     # to be changed.
-    #     "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
-    # )
+    publish(
+        project_records,
+        # If observe_gcp_kind is changed, the OPAL in terraform-observe-google may need
+        # to be changed.
+        "https://cloud.google.com/resource-manager/reference/rest/v3/projects",
+    )
 
     if project_records:
         for p in project_records:
