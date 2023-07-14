@@ -97,35 +97,6 @@ DEFAULT_ASSET_TYPES = [
 
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
 
-class PerProjectRegistry:
-    """
-    Helper class to collect various resources per project.
-    NOTE: if observe_gcp_kind changes, corresponding content will need to be updated
-    """
-    def __init__(
-        self,
-        list_func: Callable[[str], List[dict]],
-        observe_gcp_kind: str,
-    ) -> None:
-        self.list_func = list_func
-        self.observe_gcp_kind = observe_gcp_kind
-
-
-per_project_registry: List[PerProjectRegistry] = [
-    PerProjectRegistry(
-        list_service_accounts,
-        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
-    ),
-    PerProjectRegistry(
-        list_instance_to_instance_groups,
-        "https://cloud.google.com/asset-inventory/docs/supported-asset-types#INSTANCE_TO_INSTANCEGROUP",
-    ),
-    PerProjectRegistry(
-        list_cloud_scheduler_jobs,
-        "https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs",
-    ),
-]
-
 
 def publish(records: List[dict], observe_gcp_kind: str):
     """
@@ -152,7 +123,7 @@ def publish(records: List[dict], observe_gcp_kind: str):
 
 
 def safe_list(
-resource: discovery.Resource, list_kwargs: dict, key: str, max_depth=1000
+    resource: discovery.Resource, list_kwargs: dict, key: str, max_depth=1000
 ) -> Iterable[Any]:
     """safe_list returns an iterable of all elements in the Resource."""
 
@@ -166,6 +137,7 @@ resource: discovery.Resource, list_kwargs: dict, key: str, max_depth=1000
         list_kwargs["pageToken"] = result["nextPageToken"]
 
     raise Exception("max_depth exceeded")
+
 
 def list_service_accounts(project_id: str) -> List[dict]:
     """
@@ -192,6 +164,7 @@ def list_service_accounts(project_id: str) -> List[dict]:
                 }
             )
     return res
+
 
 def list_instance_to_instance_groups(project_id: str) -> List[dict]:
     """
@@ -232,6 +205,7 @@ def list_instance_to_instance_groups(project_id: str) -> List[dict]:
                         )
     return res
 
+
 def list_cloud_scheduler_jobs(project_id: str) -> List[dict]:
     """
     List cloud scheduler jobs.
@@ -268,6 +242,7 @@ def list_cloud_scheduler_jobs(project_id: str) -> List[dict]:
 
     return res
 
+
 def list_projects(parent: str) -> List[dict]:
     """
     Returns a list of projects.
@@ -299,6 +274,38 @@ def list_projects(parent: str) -> List[dict]:
             )
     return res
 
+
+class PerProjectRegistry:
+    """
+    Helper class to collect various resources per project.
+    NOTE: if observe_gcp_kind changes, corresponding content will need to be updated
+    """
+
+    def __init__(
+        self,
+        list_func: Callable[[str], List[dict]],
+        observe_gcp_kind: str,
+    ) -> None:
+        self.list_func = list_func
+        self.observe_gcp_kind = observe_gcp_kind
+
+
+per_project_registry: List[PerProjectRegistry] = [
+    PerProjectRegistry(
+        list_service_accounts,
+        "https://cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts",
+    ),
+    PerProjectRegistry(
+        list_instance_to_instance_groups,
+        "https://cloud.google.com/asset-inventory/docs/supported-asset-types#INSTANCE_TO_INSTANCEGROUP",
+    ),
+    PerProjectRegistry(
+        list_cloud_scheduler_jobs,
+        "https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs",
+    ),
+]
+
+
 def rest_of_assets():
     """
     Entry point for collecting assets that aren't captured in the asset export or the asset
@@ -325,7 +332,6 @@ def rest_of_assets():
                     traceback.print_exception(e)
 
 
-
 def export_assets(request):
     """
     Export assets from Google Cloud to a specified storage bucket.
@@ -337,7 +343,6 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
-    rest_of_assets()
     logging.info("Received export assets request")
     try:
         data = request.get_json()
