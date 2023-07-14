@@ -450,10 +450,8 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         return
 
     # Extract content_type and asset_type from the GCS bucket path
-    gcs_prefix = f"{bucket.name}/"
-    path = data["name"][len(gcs_prefix) :]
-    folders = path.split("/")
-    if len(folders) < 4:
+    folders = data["name"].split("/")
+    if len(folders) < 5:
         logging.warning("Path structure unexpected, returning without further action")
         return
 
