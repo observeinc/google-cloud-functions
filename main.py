@@ -432,8 +432,8 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         return
 
     # Skip processing if filename starts with "temp"
-    if blob.name.startswith("temp"):
-        logging.info("Blob name starts with 'temp', skipping processing")
+    if "/temp_" in blob.name:
+        logging.info("Blob name contains '/temp_', skipping processing")
         return
 
     content = blob.download_as_bytes()
