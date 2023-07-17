@@ -306,7 +306,7 @@ per_project_registry: List[PerProjectRegistry] = [
 ]
 
 
-def rest_of_assets():
+def rest_of_assets(request):
     """
     Entry point for collecting assets that aren't captured in the asset export or the asset
     feed.  This will loop through all of the functions and publish them to pubsub.
