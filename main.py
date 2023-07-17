@@ -330,6 +330,7 @@ def rest_of_assets(request):
                     # logging.warning(f"records is {records}")
                 except Exception as e:
                     traceback.print_exception(e)
+    return "Rest of assets export triggered", 200
 
 
 def export_assets(request):
