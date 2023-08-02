@@ -5,13 +5,17 @@ import json
 import logging
 import os
 import traceback
+import time
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
 from google.cloud.pubsub_v1.publisher import exceptions
+from google.cloud import logging as gcloud_logging
+from google.api_core import exceptions as google_exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
+from datetime import datetime
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
@@ -96,6 +100,16 @@ DEFAULT_ASSET_TYPES = [
 ]
 
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
+
+
+def setup_logging():
+    """
+    We don't do this globally as it would force tests to need GCP access
+    """
+    logging_client = gcloud_logging.Client()
+    logging_client.setup_logging()
+
+    return logging_client
 
 
 def publish(records: List[dict], observe_gcp_kind: str):
@@ -343,12 +357,14 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
-    logging.info("Received export assets request")
+    setup_logging()
+    logging.debug("Received export assets request")
     try:
         data = request.get_json()
     except Exception as e:
-        logging.error(f"Failed decode json from request {request}. Error: {e}")
-        logging.error(traceback.format_exc())
+        logging.critical(
+            f"Failed decode json from request {request}. Error: {e}", exc_info=True
+        )
         return
 
     if not data:
@@ -374,6 +390,8 @@ def export_assets(request):
 
     client = asset_v1.AssetServiceClient()
 
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")  # format the timestamp
+
     for content_type in content_types:
         logging.info(f"Processing content type: {content_type}")
         if content_type not in content_type_map:
@@ -382,9 +400,7 @@ def export_assets(request):
 
         try:
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = (
-                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
-            )
+            output_config.gcs_destination.uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v2_{timestamp}/{content_type}"  # use timestamped bucket name
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -397,8 +413,10 @@ def export_assets(request):
             logging.info(f"Asset export triggered for content type: {content_type}")
 
         except Exception as e:
-            logging.error(f"Failed to export content type {content_type}. Error: {e}")
-            logging.error(traceback.format_exc())
+            logging.critical(
+                f"Failed to export content type {content_type}. Error: {e}",
+                exc_info=True,
+            )
             return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
@@ -418,13 +436,17 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     Returns:
         None
     """
-    logging.info("Cloud event triggered")
+    setup_logging()
+    logging.debug("Cloud event triggered")
 
     data = cloud_event.data
+    logging.debug(f"Cloud event data: {data}")
+
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(data["bucket"])
 
     blob = bucket.get_blob(data["name"])
+    logging.debug(f"Retrieved blob: {blob}")
 
     # Check if blob is None
     if blob is None:
@@ -433,8 +455,47 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Skip processing if filename starts with "temp"
     if "/temp_" in blob.name:
-        logging.info("Blob name contains '/temp_', skipping processing")
+        logging.debug("Blob name contains '/temp_', skipping processing")
         return
+
+    # Wait until the file stops being written to
+    initial_size = blob.size
+    retries = 0
+    max_retries = 4  # Maximum number of retries
+    while True:
+        time.sleep(30)
+        try:
+            blob.reload()  # Refresh the blob properties
+        except google_exceptions.NotFound:
+            logging.warning(
+                f"The specified blob {blob.name} does not exist in the bucket, retrying after short delay..."
+            )
+            time.sleep(30)  # Wait for 30 seconds before retrying
+            try:
+                blob.reload()  # Retry
+            except google_exceptions.NotFound:
+                logging.error(
+                    f"Retry failed, the specified blob {blob.name} still does not exist in the bucket"
+                )
+                raise  # Raise exception after failed retry
+
+        logging.debug(f"Initial size: {initial_size}, Blob size: {blob.size}")
+
+        if blob.size == initial_size:
+            # File isn't being written to proceed
+            logging.info("Blob size didn't change in the window proceeding")
+            break
+        elif retries >= max_retries:
+            # Max retries. Raise an error and let GCP incremental backoff handle the retry
+            logging.warning(
+                "Blob is still being written to after max retries. Raising an exception to let GCP handle a new retry"
+            )
+            raise
+        else:
+            # File is being written to so let's wait
+            logging.info("Blob size changed so we're waiting")
+            initial_size = blob.size
+            retries += 1
 
     content = blob.download_as_bytes()
 
@@ -471,13 +532,6 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
-    # delete the file from the bucket
-    if blob.exists():
-        blob.delete()
-        logging.info("Blob successfully deleted")
-    else:
-        logging.warning("Blob not found, could not delete")
 
 
 # Manual call for testing
