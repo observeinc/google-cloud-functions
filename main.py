@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import traceback
+import time
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
 from google.cloud.pubsub_v1.publisher import exceptions
@@ -436,6 +437,24 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         logging.info("Blob name contains '/temp_', skipping processing")
         return
 
+    # Wait until the file stops being written to
+    initial_size = blob.size
+    retries = 0
+    max_retries = 20  # Maximum number of retries
+    while True:
+        time.sleep(30)
+        blob.reload()  # Refresh the blob properties
+        if blob.size == initial_size:
+            break
+        elif retries >= max_retries:
+            logging.warning(
+                "Blob is still being written to after max retries, proceeding to process anyways"
+            )
+            break
+        else:
+            initial_size = blob.size
+            retries += 1
+
     content = blob.download_as_bytes()
 
     # exit early if content is empty
@@ -471,13 +490,6 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
-    # delete the file from the bucket
-    if blob.exists():
-        blob.delete()
-        logging.info("Blob successfully deleted")
-    else:
-        logging.warning("Blob not found, could not delete")
 
 
 # Manual call for testing
