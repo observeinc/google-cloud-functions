@@ -395,7 +395,9 @@ def export_assets(request):
 
         try:
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"  # use timestamped bucket name
+            output_config.gcs_destination.uri_prefix = (
+                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
+            )
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -431,18 +433,18 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     Returns:
         None
     """
-    logging.debug("Cloud event triggered")
+    logging.info("Cloud event triggered")
 
     data = cloud_event.data
 
     # Skip processing if filename starts with "temp"
     if "/temp_" in data["name"]:
-        logging.warning("Blob name contains '/temp_', skipping processing")
+        logging.info("Blob name contains '/temp_', skipping processing")
         return
 
     # Skip processing folders
     if data["name"][-1] == "/":
-        logging.warning("Blob name ends in '/', skipping processing")
+        logging.info("Blob name ends in '/', skipping processing")
         return     
 
     storage_client = storage.Client()
@@ -499,7 +501,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         logging.info("Blob successfully deleted")
     else:
         logging.warning("Blob not found, could not delete")
-    return "Sucessfully processed buket", 200
+    return "Successfully processed file", 200
 
 
 # Manual call for testing
