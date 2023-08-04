@@ -5,13 +5,23 @@ import json
 import logging
 import os
 import traceback
+import time
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
 from google.cloud.pubsub_v1.publisher import exceptions
+from google.cloud import logging as gcloud_logging
+from google.api_core import exceptions as google_exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
+from datetime import datetime
+
+# Instantiates a client
+logging_client = gcloud_logging.Client()
+
+# Connects the logger to the root logging handler; by default, the severity level will be INFO.
+logging_client.setup_logging()
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
@@ -330,7 +340,6 @@ def rest_of_assets(request):
                     # logging.warning(f"records is {records}")
                 except Exception as e:
                     traceback.print_exception(e)
-    return "Rest of assets export triggered", 200
 
 
 def export_assets(request):
@@ -344,12 +353,13 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
-    logging.info("Received export assets request")
+    logging.debug("Received export assets request")
     try:
         data = request.get_json()
     except Exception as e:
-        logging.error(f"Failed decode json from request {request}. Error: {e}")
-        logging.error(traceback.format_exc())
+        logging.critical(
+            f"Failed decode json from request {request}. Error: {e}", exc_info=True
+        )
         return
 
     if not data:
@@ -375,6 +385,8 @@ def export_assets(request):
 
     client = asset_v1.AssetServiceClient()
 
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")  # format the timestamp
+
     for content_type in content_types:
         logging.info(f"Processing content type: {content_type}")
         if content_type not in content_type_map:
@@ -383,9 +395,7 @@ def export_assets(request):
 
         try:
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = (
-                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
-            )
+            output_config.gcs_destination.uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"  # use timestamped bucket name
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -398,8 +408,10 @@ def export_assets(request):
             logging.info(f"Asset export triggered for content type: {content_type}")
 
         except Exception as e:
-            logging.error(f"Failed to export content type {content_type}. Error: {e}")
-            logging.error(traceback.format_exc())
+            logging.critical(
+                f"Failed to export content type {content_type}. Error: {e}",
+                exc_info=True,
+            )
             return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
@@ -419,23 +431,30 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     Returns:
         None
     """
-    logging.info("Cloud event triggered")
+    logging.debug("Cloud event triggered")
 
     data = cloud_event.data
+
+    # Skip processing if filename starts with "temp"
+    if "/temp_" in data["name"]:
+        logging.warning("Blob name contains '/temp_', skipping processing")
+        return
+
+    # Skip processing folders
+    if data["name"][-1] == "/":
+        logging.warning("Blob name ends in '/', skipping processing")
+        return     
+
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(data["bucket"])
 
     blob = bucket.get_blob(data["name"])
+    logging.debug(f"Retrieved blob: {blob}")
 
     # Check if blob is None
     if blob is None:
-        logging.warning("Blob is None, returning without further action")
-        return
-
-    # Skip processing if filename starts with "temp"
-    if "/temp_" in blob.name:
-        logging.info("Blob name contains '/temp_', skipping processing")
-        return
+        logging.error(f'Blob is None, returning without further action for {data["name"]}')
+        raise
 
     content = blob.download_as_bytes()
 
@@ -448,6 +467,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     try:
         json_objects = [json.loads(line) for line in content.splitlines() if line]
     except json.JSONDecodeError as e:
+        logging.warning(f'Error processing json for {data["name"]} {e}')
         return
 
     # Extract content_type and asset_type from the GCS bucket path
@@ -473,12 +493,13 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_content_type=content_type,
         )
 
-    # delete the file from the bucket
+     # delete the file from the bucket
     if blob.exists():
         blob.delete()
         logging.info("Blob successfully deleted")
     else:
         logging.warning("Blob not found, could not delete")
+    return "Sucessfully processed buket", 200
 
 
 # Manual call for testing
