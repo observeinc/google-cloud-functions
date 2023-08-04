@@ -383,9 +383,7 @@ def export_assets(request):
 
         try:
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = (
-                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
-            )
+            output_config.gcs_destination.uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v2_{timestamp}/{content_type}"  # use timestamped bucket name
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -443,7 +441,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Check if blob is None
     if blob is None:
-        logging.warning("Blob is None, returning without further action")
+        logging.warning(f'Blob is None, returning without further action on {data["name"]}')
+        logging.warning(f'Event received is {cloud_event}')
+        logging.warning(f'Data received is {cloud_event.data}')
         return
 
     content = blob.download_as_bytes()
@@ -482,14 +482,6 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
-    # delete the file from the bucket
-    if blob.exists():
-        blob.delete()
-        logging.info("Blob successfully deleted")
-    else:
-        logging.warning("Blob not found, could not delete")
-    return "Successfully processed file", 200
 
 
 # Manual call for testing
