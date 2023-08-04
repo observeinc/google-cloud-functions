@@ -445,7 +445,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     # Skip processing folders
     if data["name"][-1] == "/":
         logging.info("Blob name ends in '/', skipping processing")
-        return     
+        return
 
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(data["bucket"])
@@ -455,7 +455,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Check if blob is None
     if blob is None:
-        logging.error(f'Blob is None, returning without further action for {data["name"]}')
+        logging.error(
+            f'Blob is None, returning without further action for {data["name"]}'
+        )
         raise
 
     content = blob.download_as_bytes()
@@ -495,7 +497,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_content_type=content_type,
         )
 
-     # delete the file from the bucket
+    # delete the file from the bucket
     if blob.exists():
         blob.delete()
         logging.info("Blob successfully deleted")
@@ -505,9 +507,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
 
 # Manual call for testing
-# mock_request = Mock()
-# mock_request.get_json.return_value = {
-#     "asset_types": ["storage.googleapis.com.*"],
-#     "content_types": ["RESOURCE"]
-# }
-# export_assets(mock_request)
+mock_request = Mock()
+mock_request.get_json.return_value = {
+    "asset_types": ["storage.googleapis.com.*"],
+    "content_types": ["RESOURCE"],
+}
+export_assets(mock_request)
