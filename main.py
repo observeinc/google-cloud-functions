@@ -5,23 +5,13 @@ import json
 import logging
 import os
 import traceback
-import time
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
 from google.cloud.pubsub_v1.publisher import exceptions
-from google.cloud import logging as gcloud_logging
-from google.api_core import exceptions as google_exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
-from datetime import datetime
-
-# Instantiates a client
-logging_client = gcloud_logging.Client()
-
-# Connects the logger to the root logging handler; by default, the severity level will be INFO.
-logging_client.setup_logging()
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
