@@ -385,8 +385,6 @@ def export_assets(request):
 
     client = asset_v1.AssetServiceClient()
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")  # format the timestamp
-
     for content_type in content_types:
         logging.info(f"Processing content type: {content_type}")
         if content_type not in content_type_map:
