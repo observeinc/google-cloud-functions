@@ -507,9 +507,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
 
 # Manual call for testing
-mock_request = Mock()
-mock_request.get_json.return_value = {
-    "asset_types": ["storage.googleapis.com.*"],
-    "content_types": ["RESOURCE"],
-}
-export_assets(mock_request)
+# mock_request = Mock()
+# mock_request.get_json.return_value = {
+#     "asset_types": ["storage.googleapis.com.*"],
+#     "content_types": ["RESOURCE"],
+# }
+# export_assets(mock_request)
