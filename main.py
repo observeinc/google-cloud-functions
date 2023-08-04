@@ -12,6 +12,7 @@ from googleapiclient import discovery
 from cloudevents.http import CloudEvent
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
+from datetime import datetime
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
@@ -374,6 +375,7 @@ def export_assets(request):
     }
 
     client = asset_v1.AssetServiceClient()
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")  # format the timestamp
 
     for content_type in content_types:
         logging.info(f"Processing content type: {content_type}")
