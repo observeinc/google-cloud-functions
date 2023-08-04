@@ -431,7 +431,7 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
     Returns:
         None
     """
-    logging.info("Cloud event triggered")
+    logging.debug("Cloud event triggered")
 
     data = cloud_event.data
 
