@@ -444,8 +444,8 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Check if blob is None
     if blob is None:
-        logging.critical(f'Blob is None, returning without further action on {data["name"]}')
-        raise
+        # logging.critical(f'Blob is None, returning without further action on {data["name"]}')
+        raise Exception("Blob is none, throw exception and retry")
 
     content = blob.download_as_bytes()
 
