@@ -331,7 +331,7 @@ def rest_of_assets(request):
                     # logging.warning(f"records is {records}")
                 except Exception as e:
                     traceback.print_exception(e)
-    return "Rest of assets export triggered", 200
+    return "Rest of export triggered", 200
 
 
 def export_assets(request):
@@ -431,7 +431,10 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
         logging.info("Blob name contains '/temp_', skipping processing")
         return
 
-    # Skip processing folders
+    # Skip processing folders.  Folder creation triggers the function to execute
+    # but we don't have anything to process on the creation of a folder so we
+    # want to fail fast.  The cloud event does not provide a cleaner way of detecting
+    # this
     if data["name"][-1] == "/":
         logging.info("Blob name ends in '/', skipping processing")
         return
@@ -444,8 +447,10 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
     # Check if blob is None
     if blob is None:
-        # logging.critical(f'Blob is None, returning without further action on {data["name"]}')
-        raise Exception("Blob is none, throw exception and retry")
+        logging.critical(
+            f'Blob is None, returning without further action on {data["name"]}'
+        )
+        raise
 
     content = blob.download_as_bytes()
 
