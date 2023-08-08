@@ -5,19 +5,25 @@ import json
 import logging
 import os
 import traceback
+import base64
 
-from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
+from google.cloud import asset_v1, compute_v1, pubsub_v1, storage, tasks_v2
+from googleapiclient import discovery
 from google.cloud.pubsub_v1.publisher import exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
+from google.protobuf.timestamp_pb2 import Timestamp
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"].strip()
 PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
+TASK_QUEUE = os.environ["TASK_QUEUE"].strip()
+GCP_REGION = os.environ["GCP_REGION"].strip()
+SERVICE_ACCOUNT_EMAIL = os.environ["SERVICE_ACCOUNT_EMAIL"].strip()
 
 DEFAULT_ASSET_TYPES = [
     "aiplatform.googleapis.com.*",
@@ -420,6 +426,9 @@ def export_assets(request):
             logging.info(
                 f"Asset export triggered for content type: {content_type}. Operation name: {operation.operation.name} saved to GCS."
             )
+
+            create_cloud_task(f"{path}/operation_name.txt")
+
         except Exception as e:
             logging.critical(
                 f"Failed to export content type {content_type}. Error: {e}",
@@ -428,6 +437,73 @@ def export_assets(request):
             return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
+
+
+def create_cloud_task(blob_path):
+    # Initialize client
+    client = tasks_v2.CloudTasksClient()
+    project = PARENT.split("/")[1]
+    queue_path = client.queue_path(project, GCP_REGION, TASK_QUEUE)
+
+    # Construct the URL for the cloud function. This URL will be hit by Cloud Tasks.
+    url = f"https://{GCP_REGION}-{project}.cloudfunctions.net/check_export_operation_status"
+    payload = blob_path.encode()
+
+    # Set the time for when you want the task to be attempted
+    now = datetime.utcnow() + timedelta(minutes=1)
+    timestamp = Timestamp()
+    timestamp.FromDatetime(now)
+
+    task = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": url,
+            "body": payload,
+        },
+        "schedule_time": timestamp,
+    }
+
+    try:
+        response = client.create_task(parent=queue_path, task=task)
+    except Exception as e:
+        logging.critical(f"Error while creating task: {str(e)}", exc_info=True)
+
+    logging.info(f"Created task: {response.name}")
+
+    return response
+
+
+def check_export_operation_status(request):
+    # Decode the GCS path from the request body
+    body_data = request.data.decode("utf-8")
+    gcs_path = base64.b64decode(body_data).decode("utf-8")
+
+    # Use GCS client to read the operation name from the file
+    storage_client = storage.Client()
+    bucket_name, blob_name = gcs_path.split("/", 1)
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    operation_name = (
+        blob.download_as_text().strip()
+    )  # ensure there's no leading/trailing whitespace
+
+    # Authenticate using the default service account and create a service client for the Cloud Asset API
+    asset_service = discovery.build("cloudasset", "v1", cache_discovery=False)
+
+    # Create the request to get operation details
+    get_operation_request = asset_service.operations().get(name=operation_name)
+    response = get_operation_request.execute()
+
+    # Check if operation is done
+    if response.get("done", False):
+        result = response.get("response", None)
+        print("Operation completed with result:", result)
+    else:
+        print("Operation is still in progress")
+
+    # For debugging purposes
+    # import pdb
+    # pdb.set_trace()
 
 
 # Triggered by a change in a storage bucket
@@ -513,9 +589,18 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
 
 # Manual call for testing
-mock_request = Mock()
-mock_request.get_json.return_value = {
-    "asset_types": ["storage.googleapis.com.*"],
-    "content_types": ["RESOURCE"],
-}
-export_assets(mock_request)
+# mock_request = Mock()
+# mock_request.get_json.return_value = {
+#     "asset_types": ["storage.googleapis.com.*"],
+#     "content_types": ["RESOURCE"],
+# }
+# export_assets(mock_request)
+
+# blob_path = "dev-content-eng-colin-bucket/asset_export_v2_20230808145233/IAM_POLICY/operation_name.txt"
+# create_cloud_task(blob_path)
+
+# gcs_path_str = "dev-content-eng-colin-bucket/asset_export_v2_20230808200008/RESOURCE/operation_name.txt"
+# encoded_gcs_path = base64.b64encode(gcs_path_str.encode("utf-8"))
+# mock_request = Mock()
+# mock_request.data = encoded_gcs_path
+# check_export_operation_status(mock_request)
