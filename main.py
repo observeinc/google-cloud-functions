@@ -385,8 +385,13 @@ def export_assets(request):
             raise ValueError(f"Invalid CONTENT_TYPE: {content_type}")
 
         try:
+            # Initialize the GCS client
+            storage_client = storage.Client()
+
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v2_{timestamp}/{content_type}"  # use timestamped bucket name
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v2_{timestamp}/{content_type}"
+            output_config.gcs_destination.uri_prefix = uri_prefix
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -395,9 +400,26 @@ def export_assets(request):
                 output_config=output_config,
             )
 
-            client.export_assets(request=request)
-            logging.info(f"Asset export triggered for content type: {content_type}")
+            # Capture the returned operation
+            operation = client.export_assets(request=request)
 
+            # Extract bucket_name and path from OUTPUT_BUCKET
+            gcs_prefix = "gs://"
+            if OUTPUT_BUCKET.startswith(gcs_prefix):
+                bucket_name = OUTPUT_BUCKET[len(gcs_prefix) :].split("/")[0]
+                path = f"asset_export_v2_{timestamp}/{content_type}"
+            else:
+                logging.error(f"Invalid GCS URI: {OUTPUT_BUCKET}")
+                raise ValueError(f"Invalid GCS URI: {OUTPUT_BUCKET}")
+
+            # Write the operation name to GCS
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(f"{path}/operation_name.txt")
+            blob.upload_from_string(operation.operation.name)
+
+            logging.info(
+                f"Asset export triggered for content type: {content_type}. Operation name: {operation.operation.name} saved to GCS."
+            )
         except Exception as e:
             logging.critical(
                 f"Failed to export content type {content_type}. Error: {e}",
@@ -491,9 +513,9 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 
 
 # Manual call for testing
-# mock_request = Mock()
-# mock_request.get_json.return_value = {
-#     "asset_types": ["storage.googleapis.com.*"],
-#     "content_types": ["RESOURCE"]
-# }
-# export_assets(mock_request)
+mock_request = Mock()
+mock_request.get_json.return_value = {
+    "asset_types": ["storage.googleapis.com.*"],
+    "content_types": ["RESOURCE"],
+}
+export_assets(mock_request)
