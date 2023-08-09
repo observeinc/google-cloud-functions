@@ -26,6 +26,7 @@ PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
 TASK_QUEUE = os.environ["TASK_QUEUE"].strip()
 GCP_REGION = os.environ["GCP_REGION"].strip()
 SERVICE_ACCOUNT_EMAIL = os.environ["SERVICE_ACCOUNT_EMAIL"].strip()
+GCS_TO_PUBSUB_CLOUD_FUNCTION = os.environ["GCS_TO_PUBSUB_CLOUD_FUNCTION"]
 
 DEFAULT_ASSET_TYPES = [
     "aiplatform.googleapis.com.*",
@@ -483,7 +484,7 @@ def create_cloud_task(blob_path):
     queue_path = client.queue_path(project, GCP_REGION, TASK_QUEUE)
 
     # Construct the URL for the cloud function. This URL will be hit by Cloud Tasks.
-    url = f"https://{GCP_REGION}-{project}.cloudfunctions.net/check_export_operation_status"
+    url = f"https://{GCP_REGION}-{project}.cloudfunctions.net/{GCS_TO_PUBSUB_CLOUD_FUNCTION}"
     payload = blob_path.encode()
 
     # Set the time for when you want the task to be attempted
@@ -511,7 +512,7 @@ def create_cloud_task(blob_path):
     return response
 
 
-def check_export_operation_status(request):
+def gcs_to_pubsub(request):
     logging.info("Starting to check export operation status.")
 
     gcs_path = request.data.decode("utf-8")
