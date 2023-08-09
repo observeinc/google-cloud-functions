@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import patch, MagicMock
-from main import export_assets, check_export_operation_status
+import json
+import gzip
+import os
+from unittest.mock import ANY, patch, MagicMock
+from main import export_assets, check_export_operation_status, process_gcs_directory
 from google.cloud import storage
 from google.cloud import tasks_v2
 
@@ -221,4 +224,58 @@ class TestCheckExportOperationStatus(BaseTest):
 
         self.assertIn(
             "Asset export operation not yet completed", str(context.exception)
+        )
+
+
+class TestProcessGCSDirectory(BaseTest):
+    @patch("main.pubsub_v1.PublisherClient")
+    @patch("main.storage.Client")
+    def test_process_gcs_directory_success(
+        self, mock_storage_client, mock_pubsub_client
+    ):
+        # Mock GCS methods
+        mock_bucket = self.mock_bucket
+        mock_blob = self.mock_blob
+
+        # Mocking list_blobs
+        blob1 = MagicMock()
+        blob1.name = "some_prefix/test_path/operation_name.txt"
+        blob2 = MagicMock()
+        blob2.name = "some_prefix/test_path/RESOURCE/google.compute.Disk/my_blob.txt"
+        blob2.download_as_bytes.return_value = (
+            b'{"asset_type": "google.compute.Disk", "name": "asset1"}'
+        )
+
+        mock_bucket.list_blobs.return_value = [blob1, blob2]
+
+        # Mock blob exists check
+        mock_blob.exists.return_value = True
+
+        # Setup storage client
+        mock_storage_client.return_value.get_bucket.return_value = mock_bucket
+
+        # Setup PubSub client
+        mock_publisher = mock_pubsub_client.return_value
+
+        # Call the function
+        response = process_gcs_directory("test_bucket_name", "some_prefix/test_path/")
+
+        # Assertions
+        self.assertEqual(
+            response,
+            ("Asset export operation complete. Files processed successfully.", 200),
+        )
+
+        # Assert publish was called
+        expected_message = json.dumps(
+            {"asset_type": "google.compute.Disk", "name": "asset1"}
+        )
+        mock_publisher.publish.assert_called_once_with(
+            ANY,
+            data=ANY,
+            observe_content_encoding="gzip",
+            observe_original_length=str(len(expected_message)),
+            observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
+            observe_gcp_asset_type="google.compute.Disk",
+            observe_gcp_content_type="RESOURCE",
         )
