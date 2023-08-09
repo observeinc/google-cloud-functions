@@ -6,12 +6,14 @@ import logging
 import os
 import traceback
 import base64
+import sys
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage, tasks_v2
 from googleapiclient import discovery
 from google.cloud.pubsub_v1.publisher import exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
+from google.cloud import logging as gcloud_logging
 from google.protobuf.timestamp_pb2 import Timestamp
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
@@ -103,6 +105,21 @@ DEFAULT_ASSET_TYPES = [
 ]
 
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
+
+if os.environ.get("GCF_REGION"):
+    logging_client = gcloud_logging.Client()
+    logging_client.setup_logging()
+else:
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
 
 
 def publish(records: List[dict], observe_gcp_kind: str):
@@ -418,6 +435,8 @@ def export_assets(request):
                 logging.error(f"Invalid GCS URI: {OUTPUT_BUCKET}")
                 raise ValueError(f"Invalid GCS URI: {OUTPUT_BUCKET}")
 
+            full_gcs_path = f"{bucket_name}/{path}/operation_name.txt"
+
             # Write the operation name to GCS
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(f"{path}/operation_name.txt")
@@ -427,7 +446,7 @@ def export_assets(request):
                 f"Asset export triggered for content type: {content_type}. Operation name: {operation.operation.name} saved to GCS."
             )
 
-            create_cloud_task(f"{path}/operation_name.txt")
+            create_cloud_task(full_gcs_path)
 
         except Exception as e:
             logging.critical(
@@ -459,133 +478,144 @@ def create_cloud_task(blob_path):
             "http_method": tasks_v2.HttpMethod.POST,
             "url": url,
             "body": payload,
+            "oidc_token": {"service_account_email": SERVICE_ACCOUNT_EMAIL},
         },
         "schedule_time": timestamp,
     }
 
     try:
         response = client.create_task(parent=queue_path, task=task)
+        logging.info(f"Created task: {response.name}")
     except Exception as e:
         logging.critical(f"Error while creating task: {str(e)}", exc_info=True)
-
-    logging.info(f"Created task: {response.name}")
+        raise
 
     return response
 
 
 def check_export_operation_status(request):
-    # Decode the GCS path from the request body
-    body_data = request.data.decode("utf-8")
-    gcs_path = base64.b64decode(body_data).decode("utf-8")
+    logging.info("Starting to check export operation status.")
+
+    gcs_path = request.data.decode("utf-8")
+    logging.info(f"Received GCS path: {gcs_path}")
+
+    # Split the full GCS path to get the bucket name and object path
+    parts = gcs_path.split("/", 1)
+    if len(parts) != 2:
+        logging.error(f"Invalid GCS path format: {gcs_path}")
+        return "Error processing the request. Invalid GCS path format.", 400
+
+    bucket_name = parts[0]
+    object_path = parts[1]
+    resource_prefix = object_path.rsplit("/", 1)[0] + "/"
 
     # Use GCS client to read the operation name from the file
     storage_client = storage.Client()
-    bucket_name, blob_name = gcs_path.split("/", 1)
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
+    blob = bucket.blob(object_path)  # Use only the object path, not the full GCS path
     operation_name = (
         blob.download_as_text().strip()
-    )  # ensure there's no leading/trailing whitespace
+    )  # ensure no leading/trailing whitespace
+    logging.info(f"Extracted operation name: {operation_name}")
 
     # Authenticate using the default service account and create a service client for the Cloud Asset API
     asset_service = discovery.build("cloudasset", "v1", cache_discovery=False)
 
     # Create the request to get operation details
+    logging.info(f"Fetching details for operation: {operation_name}")
     get_operation_request = asset_service.operations().get(name=operation_name)
     response = get_operation_request.execute()
 
     # Check if operation is done
     if response.get("done", False):
-        result = response.get("response", None)
-        print("Operation completed with result:", result)
+        logging.info("Asset export operation is complete. Starting file processing.")
+        # Process files in the GCS directory
+        return process_gcs_directory(bucket_name, resource_prefix)
     else:
-        print("Operation is still in progress")
+        logging.warning(
+            "The asset export operation is still in progress. It will be retried."
+        )
+        raise Exception(
+            "Asset export operation not yet completed. Task will be retried."
+        )
 
-    # For debugging purposes
-    # import pdb
-    # pdb.set_trace()
 
-
-# Triggered by a change in a storage bucket
-@functions_framework.cloud_event
-def gcs_to_pubsub(cloud_event: CloudEvent):
-    """
-    Function triggered by a change in a storage bucket. When a change is detected,
-    it fetches the blob from the bucket, and if it passes checks, sends its contents
-    to a Pub/Sub topic.
-
-    Args:
-        cloud_event: The CloudEvent triggered by a change in the bucket.
-
-    Returns:
-        None
-    """
-    logging.debug("Cloud event triggered")
-
-    data = cloud_event.data
-
-    # Skip processing if filename starts with "temp"
-    if "/temp_" in data["name"]:
-        logging.info("Blob name contains '/temp_', skipping processing")
-        return
-
-    # Skip processing folders.  Folder creation triggers the function to execute
-    # but we don't have anything to process on the creation of a folder so we
-    # want to fail fast.  The cloud event does not provide a cleaner way of detecting
-    # this
-    if data["name"][-1] == "/":
-        logging.info("Blob name ends in '/', skipping processing")
-        return
-
+def process_gcs_directory(bucket_name, prefix):
+    logging.info(
+        f"Starting to process the gcs directory with arguments: {bucket_name}, {prefix}"
+    )
     storage_client = storage.Client()
-    bucket = storage_client.get_bucket(data["bucket"])
+    bucket = storage_client.get_bucket(bucket_name)
 
-    blob = bucket.get_blob(data["name"])
-    logging.debug(f"Retrieved blob: {blob}")
-
-    # Check if blob is None
-    if blob is None:
-        logging.critical(
-            f'Blob is None, returning without further action on {data["name"]}'
+    # Check if operation_name.txt exists
+    lock_blob_name = f"{prefix}operation_name.txt"
+    lock_blob = bucket.blob(lock_blob_name)
+    if not lock_blob.exists():
+        logging.info(
+            f"operation_name.txt not found at {lock_blob_name}. Exiting early."
         )
-        raise
-
-    content = blob.download_as_bytes()
-
-    # exit early if content is empty
-    if not content:
-        logging.warning("Content is empty, returning without further action")
-        return
-
-    # parse the content as a list of JSON objects
-    try:
-        json_objects = [json.loads(line) for line in content.splitlines() if line]
-    except json.JSONDecodeError as e:
-        logging.warning(f'Error processing json for {data["name"]} {e}')
-        return
-
-    # Extract content_type and asset_type from the GCS bucket path
-    folders = data["name"].split("/")
-    if len(folders) < 5:
-        logging.warning("Path structure unexpected, returning without further action")
-        return
-
-    content_type = folders[2]
-    asset_type = folders[3]
-
-    # publish to Pub/Sub
-    publisher = pubsub_v1.PublisherClient()
-    for json_object in json_objects:
-        message = json.dumps(json_object)
-        publisher.publish(
-            PUBSUB_TOPIC,
-            data=gzip.compress(message.encode()),
-            observe_content_encoding="gzip",
-            observe_original_length=str(len(message)),
-            observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
-            observe_gcp_asset_type=asset_type,
-            observe_gcp_content_type=content_type,
+        return (
+            "Lockfile isn't present so assuming all files were previously processed successfully.",
+            200,
         )
+
+    # List blobs (i.e., files) within the GCS directory (i.e., prefix)
+    blobs = bucket.list_blobs(prefix=prefix)
+    for blob in blobs:
+        # Skip the operation_name.txt file while processing
+        if blob.name == lock_blob_name:
+            continue
+
+        if blob.name.endswith("/"):
+            continue  # Skip directories/folders
+
+        logging.info(f"Processing blob: {blob.name}")
+        content = blob.download_as_bytes()
+
+        # skip if content is empty
+        if not content:
+            logging.warning(f"Content in blob {blob.name} is empty, skipping.")
+            continue
+
+        # parse the content as a list of JSON objects
+        try:
+            json_objects = [json.loads(line) for line in content.splitlines() if line]
+        except json.JSONDecodeError as e:
+            logging.warning(f"Error processing json for {blob.name} {e}")
+            continue
+
+        # Extract content_type and asset_type from the GCS blob path
+        folders = blob.name.split("/")
+        if len(folders) < 5:
+            logging.warning(f"Path structure in {blob.name} is unexpected, skipping.")
+            continue
+
+        content_type = folders[2]
+        asset_type = folders[3]
+
+        # publish to Pub/Sub
+        publisher = pubsub_v1.PublisherClient()
+        logging.info("Sending information to pub/sub")
+        for json_object in json_objects:
+            message = json.dumps(json_object)
+            publisher.publish(
+                PUBSUB_TOPIC,
+                data=gzip.compress(message.encode()),
+                observe_content_encoding="gzip",
+                observe_original_length=str(len(message)),
+                observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
+                observe_gcp_asset_type=asset_type,
+                observe_gcp_content_type=content_type,
+            )
+
+        logging.info(f"Finished processing blob: {blob.name}")
+        blob.delete()
+        logging.info(f"Deleted blob: {blob.name}")
+
+    logging.info("Finished processing")
+    lock_blob.delete()
+    logging.info(f"Deleted lock file: {lock_blob_name}")
+    return "Asset export operation complete. Files processed successfully.", 200
 
 
 # Manual call for testing
@@ -596,11 +626,14 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
 # }
 # export_assets(mock_request)
 
-# blob_path = "dev-content-eng-colin-bucket/asset_export_v2_20230808145233/IAM_POLICY/operation_name.txt"
+
+# blob_path = "dev-content-eng-colin-bucket/asset_export_v2_20230809141905/RESOURCE/operation_name.txt"
 # create_cloud_task(blob_path)
 
-# gcs_path_str = "dev-content-eng-colin-bucket/asset_export_v2_20230808200008/RESOURCE/operation_name.txt"
-# encoded_gcs_path = base64.b64encode(gcs_path_str.encode("utf-8"))
-# mock_request = Mock()
-# mock_request.data = encoded_gcs_path
-# check_export_operation_status(mock_request)
+# data = 'asset_export_v2_20230809141905/RESOURCE/operation_name.txt'
+# response = check_export_operation_status(data)
+
+
+# bucket_name = "dev-content-eng-colin-bucket"
+# resource_prefix = "asset_export_v2_20230808210346/IAM_POLICY/"
+# process_gcs_directory(bucket_name, resource_prefix)
