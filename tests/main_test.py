@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from main import export_assets
+from google.cloud import storage
+from google.cloud import tasks_v2
 
 
 class TestExportAssets(unittest.TestCase):
@@ -119,21 +121,43 @@ class TestExportAssets(unittest.TestCase):
     @patch("main.asset_v1")
     @patch("main.asset_v1.OutputConfig")
     @patch("main.asset_v1.ExportAssetsRequest")
+    @patch("main.storage.Client")
+    @patch("main.tasks_v2.CloudTasksClient")
     def test_export_assets_sdk_exception(
-        self, mock_request, mock_output_config, mock_asset_v1
+        self,
+        mock_cloud_tasks_client,
+        mock_storage_client,
+        mock_request,
+        mock_output_config,
+        mock_asset_v1,
     ):
+        # Mock for AssetServiceClient
         mock_client = MagicMock()
         mock_client.export_assets.side_effect = Exception("SDK error")
         mock_asset_v1.AssetServiceClient.return_value = mock_client
 
-        mock_request = MagicMock()
+        # Mock for storage client
+        mock_storage_client_instance = MagicMock()
+        mock_bucket = MagicMock()
+        mock_blob = MagicMock()
+        mock_storage_client_instance.bucket.return_value = mock_bucket
+        mock_bucket.blob.return_value = mock_blob
+        mock_storage_client.return_value = mock_storage_client_instance
+
+        # Mock for CloudTasksClient
+        mock_client_tasks = MagicMock()
+        mock_cloud_tasks_client.return_value = mock_client_tasks
+
+        # Mock request object
+        mock_request_instance = MagicMock()
         request_data = {
             "asset_types": ["storage.googleapis.com.*"],
             "content_type": ["RESOURCE"],
         }
-        mock_request.get_json.return_value = request_data
+        mock_request_instance.get_json.return_value = request_data
+        mock_request.return_value = mock_request_instance
 
-        response = export_assets(mock_request)
+        response = export_assets(mock_request_instance)
 
         self.assertEqual(
             response, ("Failed to export content type RESOURCE. Error: SDK error", 500)
