@@ -51,6 +51,21 @@ We use Python's unittest framework for testing. Run the test suite with:
 make test
 ```
 
+Run all tests in a specific file
+```
+python -m pytest tests/main_test.py
+```
+
+Run all tests in a specific class of a test file
+```
+python -m pytest tests/main_test.py::TestExportAssets
+```
+
+Run a specific test with a class
+```
+python -m pytest tests/main_test.py::TestExportAssets::test_export_assets
+```
+
 ## Contributing
 
 - Fork it (https://github.com/observeinc/google-cloud-functions/fork)

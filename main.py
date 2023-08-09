@@ -106,15 +106,33 @@ DEFAULT_ASSET_TYPES = [
 
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
 
+
+# Fetch the log level from the environment. If it's missing, default to 'WARNING'.
+log_level_str = os.environ.get("LOG_LEVEL", "WARNING").upper()
+
+# Check and set the log level
+valid_log_levels = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+log_level = valid_log_levels.get(log_level_str)
+if not log_level:
+    logging.warning(f"Invalid LOG_LEVEL: {log_level_str}. Defaulting to WARNING.")
+    log_level = logging.WARNING
+
 if os.environ.get("GCF_REGION"):
     logging_client = gcloud_logging.Client()
-    logging_client.setup_logging()
+    logging_client.setup_logging(log_level)
 else:
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(log_level)
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(log_level)
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
