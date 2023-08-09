@@ -7,6 +7,35 @@ from google.cloud import tasks_v2
 
 
 class TestExportAssets(unittest.TestCase):
+    def setUp(self):
+        # This method runs before every test
+        self.mock_request = MagicMock()
+
+        self.mock_client_instance = MagicMock()
+        self.mock_bucket = MagicMock()
+        self.mock_blob = MagicMock()
+
+        self.mock_asset_service = MagicMock()
+        self.mock_operations = MagicMock()
+        self.mock_get_operation = MagicMock()
+
+    def _setup_gcs_mocks(
+        self,
+        mock_storage_client,
+        bucket_name="test_bucket_name",
+        blob_text="test_operation_name",
+    ):
+        self.mock_blob.download_as_text.return_value = blob_text
+        self.mock_client_instance.bucket.return_value = self.mock_bucket
+        self.mock_bucket.blob.return_value = self.mock_blob
+        mock_storage_client.return_value = self.mock_client_instance
+
+    def _setup_asset_api_mocks(self, mock_discovery_build, operation_done=True):
+        self.mock_operations.get.return_value = self.mock_get_operation
+        self.mock_get_operation.execute.return_value = {"done": operation_done}
+        self.mock_asset_service.operations.return_value = self.mock_operations
+        mock_discovery_build.return_value = self.mock_asset_service
+
     @patch("main.create_cloud_task")
     @patch("main.storage")
     @patch("main.asset_v1")
@@ -170,33 +199,16 @@ class TestExportAssets(unittest.TestCase):
         self, mock_storage_client, mock_discovery_build, mock_process_gcs_directory
     ):
         # Mock the request object
-        mock_request = MagicMock()
-        mock_request.data.decode.return_value = (
+        self.mock_request.data.decode.return_value = (
             "test_bucket_name/test_path/operation_name.txt"
         )
 
-        # Mock Google Cloud Storage client
-        mock_client_instance = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.download_as_text.return_value = "test_operation_name"
-
-        mock_client_instance.bucket.return_value = mock_bucket
-        mock_bucket.blob.return_value = mock_blob
-        mock_storage_client.return_value = mock_client_instance
-
-        # Mock discovery.build for Asset API client
-        mock_asset_service = MagicMock()
-        mock_operations = MagicMock()
-        mock_get_operation = MagicMock()
-        mock_operations.get.return_value = mock_get_operation
-        mock_get_operation.execute.return_value = {"done": True}
-
-        mock_asset_service.operations.return_value = mock_operations
-        mock_discovery_build.return_value = mock_asset_service
+        # Set up mocks
+        self._setup_gcs_mocks(mock_storage_client)
+        self._setup_asset_api_mocks(mock_discovery_build, operation_done=True)
 
         # Call the function
-        response = check_export_operation_status(mock_request)
+        response = check_export_operation_status(self.mock_request)
 
         # Assertions
         mock_process_gcs_directory.assert_called_once_with(
@@ -209,36 +221,17 @@ class TestExportAssets(unittest.TestCase):
         self, mock_storage_client, mock_discovery_build
     ):
         # Mock the request object
-        mock_request = MagicMock()
-        mock_request.data.decode.return_value = (
+        self.mock_request.data.decode.return_value = (
             "test_bucket_name/test_path/operation_name.txt"
         )
 
-        # Mock Google Cloud Storage client
-        mock_client_instance = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.download_as_text.return_value = "test_operation_name"
-
-        mock_client_instance.bucket.return_value = mock_bucket
-        mock_bucket.blob.return_value = mock_blob
-        mock_storage_client.return_value = mock_client_instance
-
-        # Mock discovery.build for Asset API client
-        mock_asset_service = MagicMock()
-        mock_operations = MagicMock()
-        mock_get_operation = MagicMock()
-        mock_operations.get.return_value = mock_get_operation
-        mock_get_operation.execute.return_value = {
-            "done": False
-        }  # operation is not done
-
-        mock_asset_service.operations.return_value = mock_operations
-        mock_discovery_build.return_value = mock_asset_service
+        # Set up mocks
+        self._setup_gcs_mocks(mock_storage_client)
+        self._setup_asset_api_mocks(mock_discovery_build, operation_done=False)
 
         # Call the function and expect an exception
         with self.assertRaises(Exception) as context:
-            check_export_operation_status(mock_request)
+            check_export_operation_status(self.mock_request)
 
         self.assertIn(
             "Asset export operation not yet completed", str(context.exception)

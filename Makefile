@@ -59,7 +59,7 @@ test: install
 	PARENT=testing \
 	PROJECT_ID=project_placeholder \
 	TOPIC_ID=topic_placeholder \
-	OUTPUT_BUCKET=bucket_placeholder \
+	OUTPUT_BUCKET=gs://bucket_placeholder \
 	TASK_QUEUE=queue_placeholder \
 	GCP_REGION=gcp_placeholder \
 	SERVICE_ACCOUNT_EMAIL=nobody@observeinc.com \
@@ -88,4 +88,4 @@ docker/dev: docker/build
 
 .PHONY: docker/test
 docker/test: docker/build
-	docker run -it --rm -v $(PWD):/src -e PROJECT=test -e ENV=$(DOCKER_ENV) -u $(UID):$(GID) $(IMAGE_NAME) make test
+	docker run -it --rm -v $(PWD):/src -e PROJECT=test -e ENV=test -u $(UID):$(GID) $(IMAGE_NAME) make test
