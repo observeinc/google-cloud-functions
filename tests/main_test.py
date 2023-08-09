@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from unittest.mock import patch, MagicMock
-from main import export_assets
+from main import export_assets, check_export_operation_status
 from google.cloud import storage
 from google.cloud import tasks_v2
 
@@ -161,4 +161,44 @@ class TestExportAssets(unittest.TestCase):
 
         self.assertEqual(
             response, ("Failed to export content type RESOURCE. Error: SDK error", 500)
+        )
+
+    @patch("main.process_gcs_directory")
+    @patch("main.discovery.build")
+    @patch("main.storage.Client")
+    def test_check_export_operation_status_success(
+        self, mock_storage_client, mock_discovery_build, mock_process_gcs_directory
+    ):
+        # Mock the request object
+        mock_request = MagicMock()
+        mock_request.data.decode.return_value = (
+            "test_bucket_name/test_path/operation_name.txt"
+        )
+
+        # Mock Google Cloud Storage client
+        mock_client_instance = MagicMock()
+        mock_bucket = MagicMock()
+        mock_blob = MagicMock()
+        mock_blob.download_as_text.return_value = "test_operation_name"
+
+        mock_client_instance.bucket.return_value = mock_bucket
+        mock_bucket.blob.return_value = mock_blob
+        mock_storage_client.return_value = mock_client_instance
+
+        # Mock discovery.build for Asset API client
+        mock_asset_service = MagicMock()
+        mock_operations = MagicMock()
+        mock_get_operation = MagicMock()
+        mock_operations.get.return_value = mock_get_operation
+        mock_get_operation.execute.return_value = {"done": True}
+
+        mock_asset_service.operations.return_value = mock_operations
+        mock_discovery_build.return_value = mock_asset_service
+
+        # Call the function
+        response = check_export_operation_status(mock_request)
+
+        # Assertions
+        mock_process_gcs_directory.assert_called_once_with(
+            "test_bucket_name", "test_path/"
         )
