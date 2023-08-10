@@ -648,7 +648,7 @@ def process_gcs_directory(bucket_name, prefix):
 # create_cloud_task(blob_path)
 
 # data = 'asset_export_v2_20230809141905/RESOURCE/operation_name.txt'
-# response = check_export_operation_status(data)
+# response = gcs_to_pubsub(data)
 
 
 # bucket_name = "dev-content-eng-colin-bucket"

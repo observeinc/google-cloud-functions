@@ -4,7 +4,7 @@ import json
 import gzip
 import os
 from unittest.mock import ANY, patch, MagicMock
-from main import export_assets, check_export_operation_status, process_gcs_directory
+from main import export_assets, gcs_to_pubsub, process_gcs_directory
 from google.cloud import storage
 from google.cloud import tasks_v2
 
@@ -164,7 +164,7 @@ class TestCheckExportOperationStatus(BaseTest):
     @patch("main.process_gcs_directory")
     @patch("main.discovery.build")
     @patch("main.storage.Client")
-    def test_check_export_operation_status_success(
+    def test_gcs_to_pubsub_success(
         self, mock_storage_client, mock_discovery_build, mock_process_gcs_directory
     ):
         """Test successful check of export operation status."""
@@ -178,7 +178,7 @@ class TestCheckExportOperationStatus(BaseTest):
         self._setup_asset_api_mocks(mock_discovery_build, operation_done=True)
 
         # Call the function
-        response = check_export_operation_status(self.mock_request)
+        response = gcs_to_pubsub(self.mock_request)
 
         # Assertions
         mock_process_gcs_directory.assert_called_once_with(
@@ -187,7 +187,7 @@ class TestCheckExportOperationStatus(BaseTest):
 
     @patch("main.discovery.build")
     @patch("main.storage.Client")
-    def test_check_export_operation_status_operation_not_done(
+    def test_gcs_to_pubsub_operation_not_done(
         self, mock_storage_client, mock_discovery_build
     ):
         # Mock the request object
@@ -220,7 +220,7 @@ class TestCheckExportOperationStatus(BaseTest):
 
         # Call the function and expect an exception
         with self.assertRaises(Exception) as context:
-            check_export_operation_status(mock_request)
+            gcs_to_pubsub(mock_request)
 
         self.assertIn(
             "Asset export operation not yet completed", str(context.exception)

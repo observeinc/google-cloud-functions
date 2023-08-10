@@ -63,6 +63,7 @@ test: install
 	TASK_QUEUE=queue_placeholder \
 	GCP_REGION=gcp_placeholder \
 	SERVICE_ACCOUNT_EMAIL=nobody@observeinc.com \
+	GCS_TO_PUBSUB_CLOUD_FUNCTION=cloudfunction_placeholder \
 	python -m pytest tests/
 
 .PHONY: clean
