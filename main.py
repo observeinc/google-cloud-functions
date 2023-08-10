@@ -486,7 +486,7 @@ def create_cloud_task(blob_path):
     payload = blob_path.encode()
 
     # Set the time for when you want the task to be attempted
-    now = datetime.utcnow() + timedelta(minutes=1)
+    now = datetime.utcnow() + timedelta(minutes=10)
     timestamp = Timestamp()
     timestamp.FromDatetime(now)
 
