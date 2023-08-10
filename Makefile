@@ -56,7 +56,7 @@ install:
 
 .PHONY: test
 test: install
-	PARENT=testing \
+	PARENT=testing/test \
 	PROJECT_ID=project_placeholder \
 	TOPIC_ID=topic_placeholder \
 	OUTPUT_BUCKET=gs://bucket_placeholder \

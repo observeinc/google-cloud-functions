@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-import functions_framework
 import gzip
 import json
 import logging
 import os
 import traceback
-import base64
 import sys
 
 from google.cloud import asset_v1, compute_v1, pubsub_v1, storage, tasks_v2
@@ -125,9 +123,9 @@ if not log_level:
     logging.warning(f"Invalid LOG_LEVEL: {log_level_str}. Defaulting to WARNING.")
     log_level = logging.WARNING
 
-if os.environ.get("GCF_REGION"):
+if os.environ.get("GAE_RUNTIME"):
     logging_client = gcloud_logging.Client()
-    logging_client.setup_logging(log_level)
+    logging_client.setup_logging()
 else:
     root = logging.getLogger()
     root.setLevel(log_level)
