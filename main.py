@@ -192,7 +192,7 @@ def list_service_accounts(project_id: str) -> List[dict]:
         A list of dicts with service accounts and corresponding projectId
     """
     res = []
-    with discovery.build("iam", "v1") as service:
+    with discovery.build("iam", "v1", cache_discovery=False) as service:
         accounts = safe_list(
             service.projects().serviceAccounts(),
             {"name": "projects/" + project_id},
@@ -261,7 +261,7 @@ def list_cloud_scheduler_jobs(project_id: str) -> List[dict]:
     """
     res = []
 
-    with discovery.build("cloudscheduler", "v1") as service:
+    with discovery.build("cloudscheduler", "v1", cache_discovery=False) as service:
         locations = safe_list(
             service.projects().locations(),
             {"name": "projects/" + project_id},
@@ -297,7 +297,9 @@ def list_projects(parent: str) -> List[dict]:
         from that parent.
     """
     res = []
-    with discovery.build("cloudresourcemanager", "v3") as service:
+    with discovery.build(
+        "cloudresourcemanager", "v3", cache_discovery=False
+    ) as service:
         if parent.startswith("projects"):
             p = service.projects().get(name=parent).execute()
             projects = [p]
