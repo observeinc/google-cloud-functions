@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
-PROJECT = os.environ["PARENT"]
+PROJECT = os.environ["PROJECT"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"].strip()
 PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
 TASK_QUEUE = os.environ["TASK_QUEUE"].strip()
