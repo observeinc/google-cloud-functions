@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
+PROJECT = os.environ["PARENT"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"].strip()
 PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
 TASK_QUEUE = os.environ["TASK_QUEUE"].strip()
@@ -478,7 +479,7 @@ def export_assets(request):
 def create_cloud_task(blob_path):
     # Initialize client
     client = tasks_v2.CloudTasksClient()
-    project = PARENT.split("/")[1]
+    project = PROJECT
     queue_path = client.queue_path(project, GCP_REGION, TASK_QUEUE)
 
     # Construct the URL for the cloud function. This URL will be hit by Cloud Tasks.
