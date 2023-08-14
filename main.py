@@ -121,7 +121,7 @@ valid_log_levels = {
 
 log_level = valid_log_levels.get(log_level_str)
 if not log_level:
-    logging.warning(f"Invalid LOG_LEVEL: {log_level_str}. Defaulting to WARNING.")
+    logging.warning(f"Missing LOG_LEVEL: {log_level_str}. Defaulting to WARNING.")
     log_level = logging.WARNING
 
 if os.environ.get("GAE_RUNTIME"):
@@ -567,75 +567,90 @@ def process_gcs_directory(bucket_name, prefix):
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(bucket_name)
 
-    # Check if operation_name.txt exists
+    lock_blob_name = check_lock_file(bucket, prefix)
+    if not lock_blob_name:
+        return (
+            "Lockfile isn't present so assuming all files were previously processed successfully.",
+            200,
+        )
+
+    blobs = bucket.list_blobs(prefix=prefix)
+    for blob in blobs:
+        if blob.name == lock_blob_name or blob.name.endswith("/"):
+            continue
+
+        logging.info(f"Processing blob: {blob.name}")
+
+        json_objects = parse_blob(blob)
+        if not json_objects:
+            continue
+
+        content_type, asset_type = extract_blob_types(blob)
+        if not asset_type:
+            continue
+
+        publish_to_pubsub(json_objects, asset_type, content_type)
+
+        blob.delete()
+        logging.info(f"Deleted blob: {blob.name}")
+
+    logging.info("Finished processing")
+    lock_blob = bucket.blob(lock_blob_name)
+    lock_blob.delete()
+    logging.info(f"Deleted lock file: {lock_blob_name}")
+    return "Asset export operation complete. Files processed successfully.", 200
+
+
+def check_lock_file(bucket, prefix):
     lock_blob_name = f"{prefix}operation_name.txt"
     lock_blob = bucket.blob(lock_blob_name)
     if not lock_blob.exists():
         logging.info(
             f"operation_name.txt not found at {lock_blob_name}. Exiting early."
         )
-        return (
-            "Lockfile isn't present so assuming all files were previously processed successfully.",
-            200,
+        return None
+    return lock_blob_name
+
+
+def parse_blob(blob):
+    content = blob.download_as_bytes()
+    if not content:
+        logging.warning(f"Content in blob {blob.name} is empty, skipping.")
+        return []
+
+    try:
+        json_objects = [json.loads(line) for line in content.splitlines() if line]
+        return json_objects
+    except json.JSONDecodeError as e:
+        logging.warning(f"Error processing json for {blob.name} {e}")
+        return []
+
+
+def extract_blob_types(blob):
+    folders = blob.name.split("/")
+    if len(folders) < 5:
+        logging.warning(f"Path structure in {blob.name} is unexpected, skipping.")
+        return None, None
+
+    content_type = folders[2]
+    asset_type = folders[3]
+    return content_type, asset_type
+
+
+def publish_to_pubsub(json_objects, asset_type, content_type):
+    publisher = pubsub_v1.PublisherClient()
+    logging.info("Sending information to pub/sub")
+    for json_object in json_objects:
+        message = json.dumps(json_object)
+        publisher.publish(
+            PUBSUB_TOPIC,
+            data=gzip.compress(message.encode()),
+            observe_content_encoding="gzip",
+            observe_original_length=str(len(message)),
+            observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
+            observe_gcp_asset_type=asset_type,
+            observe_gcp_content_type=content_type,
         )
-
-    # List blobs (i.e., files) within the GCS directory (i.e., prefix)
-    blobs = bucket.list_blobs(prefix=prefix)
-    for blob in blobs:
-        # Skip the operation_name.txt file while processing
-        if blob.name == lock_blob_name:
-            continue
-
-        if blob.name.endswith("/"):
-            continue  # Skip directories/folders
-
-        logging.info(f"Processing blob: {blob.name}")
-        content = blob.download_as_bytes()
-
-        # skip if content is empty
-        if not content:
-            logging.warning(f"Content in blob {blob.name} is empty, skipping.")
-            continue
-
-        # parse the content as a list of JSON objects
-        try:
-            json_objects = [json.loads(line) for line in content.splitlines() if line]
-        except json.JSONDecodeError as e:
-            logging.warning(f"Error processing json for {blob.name} {e}")
-            continue
-
-        # Extract content_type and asset_type from the GCS blob path
-        folders = blob.name.split("/")
-        if len(folders) < 5:
-            logging.warning(f"Path structure in {blob.name} is unexpected, skipping.")
-            continue
-
-        content_type = folders[2]
-        asset_type = folders[3]
-
-        # publish to Pub/Sub
-        publisher = pubsub_v1.PublisherClient()
-        logging.info("Sending information to pub/sub")
-        for json_object in json_objects:
-            message = json.dumps(json_object)
-            publisher.publish(
-                PUBSUB_TOPIC,
-                data=gzip.compress(message.encode()),
-                observe_content_encoding="gzip",
-                observe_original_length=str(len(message)),
-                observe_gcp_kind="https://cloud.google.com/asset-inventory/docs/reference/rest/v1/TopLevel/exportAssets",
-                observe_gcp_asset_type=asset_type,
-                observe_gcp_content_type=content_type,
-            )
-
-        logging.info(f"Finished processing blob: {blob.name}")
-        blob.delete()
-        logging.info(f"Deleted blob: {blob.name}")
-
-    logging.info("Finished processing")
-    lock_blob.delete()
-    logging.info(f"Deleted lock file: {lock_blob_name}")
-    return "Asset export operation complete. Files processed successfully.", 200
 
 
 # Manual call for testing
