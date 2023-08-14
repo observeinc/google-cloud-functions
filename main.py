@@ -651,24 +651,3 @@ def publish_to_pubsub(json_objects, asset_type, content_type):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
-
-# Manual call for testing
-# mock_request = Mock()
-# mock_request.get_json.return_value = {
-#     "asset_types": ["storage.googleapis.com.*"],
-#     "content_types": ["RESOURCE"],
-# }
-# export_assets(mock_request)
-
-
-# blob_path = "dev-content-eng-colin-bucket/asset_export_v2_20230809141905/RESOURCE/operation_name.txt"
-# create_cloud_task(blob_path)
-
-# data = 'asset_export_v2_20230809141905/RESOURCE/operation_name.txt'
-# response = gcs_to_pubsub(data)
-
-
-# bucket_name = "dev-content-eng-colin-bucket"
-# resource_prefix = "asset_export_v2_20230808210346/IAM_POLICY/"
-# process_gcs_directory(bucket_name, resource_prefix)
