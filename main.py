@@ -1,22 +1,31 @@
 # -*- coding: utf-8 -*-
-import functions_framework
 import gzip
 import json
 import logging
 import os
 import traceback
+import sys
 
-from google.cloud import asset_v1, compute_v1, pubsub_v1, storage
+from google.cloud import asset_v1, compute_v1, pubsub_v1, storage, tasks_v2
+from googleapiclient import discovery
 from google.cloud.pubsub_v1.publisher import exceptions
 from googleapiclient import discovery
 from cloudevents.http import CloudEvent
+from google.cloud import logging as gcloud_logging
+from google.protobuf.timestamp_pb2 import Timestamp
 from typing import Any, Callable, Dict, Iterable, List
 from unittest.mock import Mock
+from datetime import datetime, timedelta
 
 # Set necessary environment variables
 PARENT = os.environ["PARENT"]
+PROJECT = os.environ["PROJECT"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"].strip()
 PUBSUB_TOPIC = os.environ["TOPIC_ID"].strip()
+TASK_QUEUE = os.environ["TASK_QUEUE"].strip()
+GCP_REGION = os.environ["GCP_REGION"].strip()
+SERVICE_ACCOUNT_EMAIL = os.environ["SERVICE_ACCOUNT_EMAIL"].strip()
+GCS_TO_PUBSUB_CLOUD_FUNCTION_URI = os.environ["GCS_TO_PUBSUB_CLOUD_FUNCTION_URI"]
 
 DEFAULT_ASSET_TYPES = [
     "aiplatform.googleapis.com.*",
@@ -98,6 +107,39 @@ DEFAULT_ASSET_TYPES = [
 DEFAULT_CONTENT_TYPES = ["RESOURCE", "IAM_POLICY"]
 
 
+# Fetch the log level from the environment. If it's missing, default to 'WARNING'.
+log_level_str = os.environ.get("LOG_LEVEL", "WARNING").upper()
+
+# Check and set the log level
+valid_log_levels = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+log_level = valid_log_levels.get(log_level_str)
+if not log_level:
+    logging.warning(f"Missing LOG_LEVEL: {log_level_str}. Defaulting to WARNING.")
+    log_level = logging.WARNING
+
+if os.environ.get("GAE_RUNTIME"):
+    logging_client = gcloud_logging.Client()
+    logging_client.setup_logging()
+else:
+    root = logging.getLogger()
+    root.setLevel(log_level)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(log_level)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+
+
 def publish(records: List[dict], observe_gcp_kind: str):
     """
     Publish records to pub/sub
@@ -150,7 +192,7 @@ def list_service_accounts(project_id: str) -> List[dict]:
         A list of dicts with service accounts and corresponding projectId
     """
     res = []
-    with discovery.build("iam", "v1") as service:
+    with discovery.build("iam", "v1", cache_discovery=False) as service:
         accounts = safe_list(
             service.projects().serviceAccounts(),
             {"name": "projects/" + project_id},
@@ -219,7 +261,7 @@ def list_cloud_scheduler_jobs(project_id: str) -> List[dict]:
     """
     res = []
 
-    with discovery.build("cloudscheduler", "v1") as service:
+    with discovery.build("cloudscheduler", "v1", cache_discovery=False) as service:
         locations = safe_list(
             service.projects().locations(),
             {"name": "projects/" + project_id},
@@ -255,7 +297,9 @@ def list_projects(parent: str) -> List[dict]:
         from that parent.
     """
     res = []
-    with discovery.build("cloudresourcemanager", "v3") as service:
+    with discovery.build(
+        "cloudresourcemanager", "v3", cache_discovery=False
+    ) as service:
         if parent.startswith("projects"):
             p = service.projects().get(name=parent).execute()
             projects = [p]
@@ -330,7 +374,7 @@ def rest_of_assets(request):
                     # logging.warning(f"records is {records}")
                 except Exception as e:
                     traceback.print_exception(e)
-    return "Rest of assets export triggered", 200
+    return "Rest of export triggered", 200
 
 
 def export_assets(request):
@@ -344,12 +388,13 @@ def export_assets(request):
     Returns:
         A tuple containing a success message and HTTP status code.
     """
-    logging.info("Received export assets request")
+    logging.debug("Received export assets request")
     try:
         data = request.get_json()
     except Exception as e:
-        logging.error(f"Failed decode json from request {request}. Error: {e}")
-        logging.error(traceback.format_exc())
+        logging.critical(
+            f"Failed decode json from request {request}. Error: {e}", exc_info=True
+        )
         return
 
     if not data:
@@ -374,6 +419,7 @@ def export_assets(request):
     }
 
     client = asset_v1.AssetServiceClient()
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")  # format the timestamp
 
     for content_type in content_types:
         logging.info(f"Processing content type: {content_type}")
@@ -382,10 +428,13 @@ def export_assets(request):
             raise ValueError(f"Invalid CONTENT_TYPE: {content_type}")
 
         try:
+            # Initialize the GCS client
+            storage_client = storage.Client()
+
             output_config = asset_v1.OutputConfig()
-            output_config.gcs_destination.uri_prefix = (
-                f"{OUTPUT_BUCKET}/asset_export_v1/{content_type}"
-            )
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            uri_prefix = f"{OUTPUT_BUCKET}/asset_export_v2_{timestamp}/{content_type}"
+            output_config.gcs_destination.uri_prefix = uri_prefix
 
             request = asset_v1.ExportAssetsRequest(
                 parent=PARENT,
@@ -394,73 +443,203 @@ def export_assets(request):
                 output_config=output_config,
             )
 
-            client.export_assets(request=request)
-            logging.info(f"Asset export triggered for content type: {content_type}")
+            # Capture the returned operation
+            operation = client.export_assets(request=request)
+
+            # Extract bucket_name and path from OUTPUT_BUCKET
+            gcs_prefix = "gs://"
+            if OUTPUT_BUCKET.startswith(gcs_prefix):
+                bucket_name = OUTPUT_BUCKET[len(gcs_prefix) :].split("/")[0]
+                path = f"asset_export_v2_{timestamp}/{content_type}"
+            else:
+                logging.error(f"Invalid GCS URI: {OUTPUT_BUCKET}")
+                raise ValueError(f"Invalid GCS URI: {OUTPUT_BUCKET}")
+
+            full_gcs_path = f"{bucket_name}/{path}/operation_name.txt"
+
+            # Write the operation name to GCS
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(f"{path}/operation_name.txt")
+            blob.upload_from_string(operation.operation.name)
+
+            logging.info(
+                f"Asset export triggered for content type: {content_type}. Operation name: {operation.operation.name} saved to GCS."
+            )
+
+            create_cloud_task(full_gcs_path)
 
         except Exception as e:
-            logging.error(f"Failed to export content type {content_type}. Error: {e}")
-            logging.error(traceback.format_exc())
+            logging.critical(
+                f"Failed to export content type {content_type}. Error: {e}",
+                exc_info=True,
+            )
             return f"Failed to export content type {content_type}. Error: {e}", 500
 
     return "Asset export triggered", 200
 
 
-# Triggered by a change in a storage bucket
-@functions_framework.cloud_event
-def gcs_to_pubsub(cloud_event: CloudEvent):
-    """
-    Function triggered by a change in a storage bucket. When a change is detected,
-    it fetches the blob from the bucket, and if it passes checks, sends its contents
-    to a Pub/Sub topic.
+def create_cloud_task(blob_path):
+    # Initialize client
+    client = tasks_v2.CloudTasksClient()
+    project = PROJECT
+    queue_path = client.queue_path(project, GCP_REGION, TASK_QUEUE)
 
-    Args:
-        cloud_event: The CloudEvent triggered by a change in the bucket.
+    # Construct the URL for the cloud function. This URL will be hit by Cloud Tasks.
+    url = GCS_TO_PUBSUB_CLOUD_FUNCTION_URI
+    payload = blob_path.encode()
 
-    Returns:
-        None
-    """
-    logging.info("Cloud event triggered")
+    # Set the time for when you want the task to be attempted
+    now = datetime.utcnow() + timedelta(minutes=10)
+    timestamp = Timestamp()
+    timestamp.FromDatetime(now)
 
-    data = cloud_event.data
+    task = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": url,
+            "body": payload,
+            "oidc_token": {"service_account_email": SERVICE_ACCOUNT_EMAIL},
+        },
+        "schedule_time": timestamp,
+    }
+
+    try:
+        response = client.create_task(parent=queue_path, task=task)
+        logging.info(f"Created task: {response.name}")
+    except Exception as e:
+        logging.critical(f"Error while creating task: {str(e)}", exc_info=True)
+        raise
+
+    return response
+
+
+def gcs_to_pubsub(request):
+    logging.info("Starting to check export operation status.")
+
+    gcs_path = request.data.decode("utf-8")
+    logging.info(f"Received GCS path: {gcs_path}")
+
+    # Split the full GCS path to get the bucket name and object path
+    parts = gcs_path.split("/", 1)
+    if len(parts) != 2:
+        logging.error(f"Invalid GCS path format: {gcs_path}")
+        return "Error processing the request. Invalid GCS path format.", 400
+
+    bucket_name = parts[0]
+    object_path = parts[1]
+    resource_prefix = object_path.rsplit("/", 1)[0] + "/"
+
+    # Use GCS client to read the operation name from the file
     storage_client = storage.Client()
-    bucket = storage_client.get_bucket(data["bucket"])
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(object_path)  # Use only the object path, not the full GCS path
+    operation_name = (
+        blob.download_as_text().strip()
+    )  # ensure no leading/trailing whitespace
+    logging.info(f"Extracted operation name: {operation_name}")
 
-    blob = bucket.get_blob(data["name"])
+    # Authenticate using the default service account and create a service client for the Cloud Asset API
+    asset_service = discovery.build("cloudasset", "v1", cache_discovery=False)
 
-    # Check if blob is None
-    if blob is None:
-        logging.warning("Blob is None, returning without further action")
-        return
+    # Create the request to get operation details
+    logging.info(f"Fetching details for operation: {operation_name}")
+    get_operation_request = asset_service.operations().get(name=operation_name)
+    response = get_operation_request.execute()
 
-    # Skip processing if filename starts with "temp"
-    if "/temp_" in blob.name:
-        logging.info("Blob name contains '/temp_', skipping processing")
-        return
+    # Check if operation is done
+    if response.get("done", False):
+        logging.info("Asset export operation is complete. Starting file processing.")
+        # Process files in the GCS directory
+        return process_gcs_directory(bucket_name, resource_prefix)
+    else:
+        logging.warning(
+            "The asset export operation is still in progress. It will be retried."
+        )
+        raise Exception(
+            "Asset export operation not yet completed. Task will be retried."
+        )
 
+
+def process_gcs_directory(bucket_name, prefix):
+    logging.info(
+        f"Starting to process the gcs directory with arguments: {bucket_name}, {prefix}"
+    )
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(bucket_name)
+
+    lock_blob_name = check_lock_file(bucket, prefix)
+    if not lock_blob_name:
+        return (
+            "Lockfile isn't present so assuming all files were previously processed successfully.",
+            200,
+        )
+
+    blobs = bucket.list_blobs(prefix=prefix)
+    for blob in blobs:
+        if blob.name == lock_blob_name or blob.name.endswith("/"):
+            continue
+
+        logging.info(f"Processing blob: {blob.name}")
+
+        json_objects = parse_blob(blob)
+        if not json_objects:
+            continue
+
+        content_type, asset_type = extract_blob_types(blob)
+        if not asset_type:
+            continue
+
+        publish_to_pubsub(json_objects, asset_type, content_type)
+
+        blob.delete()
+        logging.info(f"Deleted blob: {blob.name}")
+
+    logging.info("Finished processing")
+    lock_blob = bucket.blob(lock_blob_name)
+    lock_blob.delete()
+    logging.info(f"Deleted lock file: {lock_blob_name}")
+    return "Asset export operation complete. Files processed successfully.", 200
+
+
+def check_lock_file(bucket, prefix):
+    lock_blob_name = f"{prefix}operation_name.txt"
+    lock_blob = bucket.blob(lock_blob_name)
+    if not lock_blob.exists():
+        logging.info(
+            f"operation_name.txt not found at {lock_blob_name}. Exiting early."
+        )
+        return None
+    return lock_blob_name
+
+
+def parse_blob(blob):
     content = blob.download_as_bytes()
-
-    # exit early if content is empty
     if not content:
-        logging.warning("Content is empty, returning without further action")
-        return
+        logging.warning(f"Content in blob {blob.name} is empty, skipping.")
+        return []
 
-    # parse the content as a list of JSON objects
     try:
         json_objects = [json.loads(line) for line in content.splitlines() if line]
+        return json_objects
     except json.JSONDecodeError as e:
-        return
+        logging.warning(f"Error processing json for {blob.name} {e}")
+        return []
 
-    # Extract content_type and asset_type from the GCS bucket path
-    folders = data["name"].split("/")
+
+def extract_blob_types(blob):
+    folders = blob.name.split("/")
     if len(folders) < 5:
-        logging.warning("Path structure unexpected, returning without further action")
-        return
+        logging.warning(f"Path structure in {blob.name} is unexpected, skipping.")
+        return None, None
 
     content_type = folders[2]
     asset_type = folders[3]
+    return content_type, asset_type
 
-    # publish to Pub/Sub
+
+def publish_to_pubsub(json_objects, asset_type, content_type):
     publisher = pubsub_v1.PublisherClient()
+    logging.info("Sending information to pub/sub")
     for json_object in json_objects:
         message = json.dumps(json_object)
         publisher.publish(
@@ -472,19 +651,3 @@ def gcs_to_pubsub(cloud_event: CloudEvent):
             observe_gcp_asset_type=asset_type,
             observe_gcp_content_type=content_type,
         )
-
-    # delete the file from the bucket
-    if blob.exists():
-        blob.delete()
-        logging.info("Blob successfully deleted")
-    else:
-        logging.warning("Blob not found, could not delete")
-
-
-# Manual call for testing
-# mock_request = Mock()
-# mock_request.get_json.return_value = {
-#     "asset_types": ["storage.googleapis.com.*"],
-#     "content_types": ["RESOURCE"]
-# }
-# export_assets(mock_request)

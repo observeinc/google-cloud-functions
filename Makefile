@@ -4,6 +4,7 @@ CONTAINER_NAME := observe-gcp
 PROJECT_ID ?= default_project_id
 UID := $(shell id -u)
 GID := $(shell id -g)
+DOCKER_ENV ?= dev
 BUCKET_NAME ?= observeinc
 PYTHON_FILES ?= . -name "*.py" -not -path "./env/*" -print
 SEMTAG_VERSION_SUFFIX ?= `semtag getcurrent`
@@ -55,10 +56,15 @@ install:
 
 .PHONY: test
 test: install
-	PARENT=testing \
-	PROJECT_ID=placeholder \
-	TOPIC_ID=placeholder \
-	OUTPUT_BUCKET=placeholder \
+	PARENT=testing/test \
+	PROJECT=project_placeholder \
+	PROJECT_ID=project_placeholder \
+	TOPIC_ID=topic_placeholder \
+	OUTPUT_BUCKET=gs://bucket_placeholder \
+	TASK_QUEUE=queue_placeholder \
+	GCP_REGION=gcp_placeholder \
+	SERVICE_ACCOUNT_EMAIL=nobody@observeinc.com \
+	GCS_TO_PUBSUB_CLOUD_FUNCTION_URI=cloudfunction_placeholder \
 	python -m pytest tests/
 
 .PHONY: clean
@@ -80,7 +86,7 @@ docker/build:
 
 .PHONY: docker/dev
 docker/dev: docker/build
-	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/src -e PROJECT_ID=$(PROJECT_ID) -e ENV=dev -u $(UID):$(GID) $(IMAGE_NAME)
+	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/src -e PROJECT_ID=$(PROJECT_ID) -e ENV=$(DOCKER_ENV) -u $(UID):$(GID) $(IMAGE_NAME)
 
 .PHONY: docker/test
 docker/test: docker/build
