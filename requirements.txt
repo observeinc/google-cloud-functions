@@ -20,7 +20,7 @@ google-cloud-audit-log==0.2.5
 google-cloud-compute==1.11.0
 google-cloud-core==2.3.2
 google-cloud-logging==3.5.0
-google-cloud-org-policy==1.8.1
+google-cloud-org-policy==1.8.2
 google-cloud-os-config==1.15.1
 google-cloud-pubsub==2.17.1
 google-cloud-storage==2.9.0
