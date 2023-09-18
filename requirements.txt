@@ -24,7 +24,7 @@ google-cloud-org-policy==1.8.2
 google-cloud-os-config==1.15.2
 google-cloud-pubsub==2.18.3
 google-cloud-storage==2.10.0
-google-cloud-tasks==2.14.1
+google-cloud-tasks==2.14.2
 google-crc32c==1.5.0
 google-resumable-media==2.6.0
 googleapis-common-protos==1.60.0
