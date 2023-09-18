@@ -9,7 +9,7 @@ deprecation==2.1.0
 Flask==2.3.2
 functions-framework==3.4.0
 google-api-core==2.11.1
-google-api-python-client==2.98.0
+google-api-python-client==2.99.0
 google-auth==2.23.0
 google-auth-httplib2==0.1.1
 google-auth-oauthlib==1.1.0
