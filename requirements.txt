@@ -21,7 +21,7 @@ google-cloud-compute==1.14.1
 google-cloud-core==2.3.3
 google-cloud-logging==3.8.0
 google-cloud-org-policy==1.8.2
-google-cloud-os-config==1.15.2
+google-cloud-os-config==1.15.3
 google-cloud-pubsub==2.18.4
 google-cloud-storage==2.11.0
 google-cloud-tasks==2.14.2
