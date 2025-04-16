@@ -12,8 +12,9 @@ jobs:
     name: Orca Scan
     runs-on: ubuntu-latest
     env:
-      PROJECT_KEY: observeinc-google-cloud-functions
+      #PROJECT_KEY: observeinc-google-cloud-functions
       #PROJECT_KEY: observeinc-azure-collection-functions
+      PROJECT_KEY: default
     steps:
       # Checkout your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checkout Repository
