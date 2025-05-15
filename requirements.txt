@@ -1,8 +1,8 @@
 blinker==1.7.0
-cachetools==5.3.2
-certifi==2023.11.17
-charset-normalizer==3.3.2
-click==8.1.7
+cachetools==5.5.2
+certifi==2025.1.31
+charset-normalizer==3.4.1
+click==8.1.8
 cloudevents==1.10.1
 Deprecated==1.2.14
 deprecation==2.1.0
@@ -31,7 +31,7 @@ googleapis-common-protos==1.61.0
 grpc-google-iam-v1==0.12.6
 grpcio==1.62.1
 grpcio-status==1.57.0
-gunicorn==20.1.0
+gunicorn==23.0.0
 httplib2==0.22.0
 idna==3.4
 importlib-metadata==7.0.0
