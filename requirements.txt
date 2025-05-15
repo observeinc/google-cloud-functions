@@ -2,7 +2,7 @@ blinker==1.7.0
 cachetools==5.3.2
 certifi==2025.1.31
 charset-normalizer==3.3.2
-click==8.1.7
+click==8.1.8
 cloudevents==1.10.1
 Deprecated==1.2.14
 deprecation==2.1.0
