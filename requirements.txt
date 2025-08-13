@@ -23,7 +23,7 @@ google-cloud-logging==3.12.1
 google-cloud-org-policy==1.8.3
 google-cloud-os-config==1.15.3
 google-cloud-pubsub==2.18.4
-google-cloud-storage==3.1.1
+google-cloud-storage==3.3.0
 google-cloud-tasks==2.14.2
 google-crc32c==1.5.0
 google-resumable-media==2.7.2
