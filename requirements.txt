@@ -6,7 +6,7 @@ click==8.1.8
 cloudevents==1.10.1
 Deprecated==1.2.14
 deprecation==2.1.0
-Flask==3.1.1
+Flask==3.1.2
 functions-framework==3.5.0
 google-api-core==2.25.1
 google-api-python-client==2.110.0
